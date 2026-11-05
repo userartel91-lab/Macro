@@ -20,7 +20,11 @@ public final class World implements BlockGetter {
     public volatile SectionListener listener = (a, b, c, d) -> {};
 
     /** Sees every block change (used to record what an actor does). */
-    public interface BlockRecorder { void changed(int x, int y, int z, int before, int after); }
+    public interface BlockRecorder {
+        void changed(int x, int y, int z, int before, int after);
+        /** Just before setBlock replaces a block (its block entity, e.g. a chest's items, is still there). */
+        default void before(int x, int y, int z, int old, int state) {}
+    }
     public BlockRecorder blockRecorder;
 
     /** Dropped items, falling blocks... (main thread only). */
@@ -98,12 +102,35 @@ public final class World implements BlockGetter {
         if (c == null) return false;
         int old = c.get(x & 15, y, z & 15);
         if (old == state) return true;
+        BlockRecorder rec = blockRecorder;
+        if (rec != null) rec.before(x, y, z, old, state);
         if ((old >> 4) != (state >> 4)) {
             int idx = BlockEntityKey.key(x, y, z);
             BlockEntity be = c.blockEntities.remove(idx);
             if (be != null) dropContents(be);
         }
         return setBlockKeepEntity(x, y, z, state);
+    }
+
+    /**
+     * Sets a block without spilling the old block's container (scene replays and "restore world": the contents are
+     * put back from a snapshot, so spilling them would duplicate items). The old block entity is simply removed.
+     */
+    public boolean setBlockNoDrop(int x, int y, int z, int state) {
+        if (y < 0 || y >= Chunk.HEIGHT) return false;
+        Chunk c = chunkAt(x, z);
+        if (c == null) return false;
+        int old = c.get(x & 15, y, z & 15);
+        if (old == state) return true;
+        if ((old >> 4) != (state >> 4)) c.blockEntities.remove(BlockEntityKey.key(x, y, z));
+        return setBlockKeepEntity(x, y, z, state);
+    }
+
+    /** The block entity stored at a position, or null (never creates one). */
+    public BlockEntity existingBlockEntity(int x, int y, int z) {
+        Chunk c = chunkAt(x, z);
+        if (c == null || y < 0 || y > 255) return null;
+        return c.blockEntities.get(BlockEntityKey.key(x, y, z));
     }
 
     /** Changes the block but keeps its block entity (furnace lighting up, door opening). */

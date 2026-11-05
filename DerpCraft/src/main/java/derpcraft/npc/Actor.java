@@ -83,6 +83,70 @@ public final class Actor {
     /** Off = keeps its AI but does not play in scenes. */
     public boolean sceneEnabled = true;
 
+    // ---------------------------------------------------------------- body / stats (Stats page of the NPC Hub)
+    /** Walking and running speed (1 = like the player). */
+    public float speed = 1;
+    /** LOOK / FOLLOW: how close the player must be for the head to turn (blocks). */
+    public float lookRange = 10;
+    /** WANDER: how far from its spot it walks (blocks). */
+    public float wanderRadius = 8;
+    /** Ticks between two melee hits (20 = one a second). */
+    public int attackDelay = 12;
+    /** Health points healed per second when not hurt for 5 seconds (0 = none). */
+    public float regen;
+    /** Cannot be hurt at all (by the player, NPCs, creatures, cars, falls). */
+    public boolean invulnerable;
+    /** Hits push it back. */
+    public boolean knockback = true;
+    /** The player and other NPCs push it aside when they walk into it. */
+    public boolean pushable = true;
+    /** Falls of more than 3 blocks hurt. */
+    public boolean takesFallDamage = true;
+    /** Name tag colour: 0 = auto (red when aggressive), then {@link #NAME_COLORS}. */
+    public int nameColor;
+    public static final String[] NAME_COLOR_NAMES = {"Auto", "White", "Yellow", "Green", "Aqua", "Gold", "Pink", "Gray"};
+    public static final int[] NAME_COLORS = {0, 0xFFFFFF, 0xFFFF55, 0x55FF55, 0x55FFFF, 0xFFAA00, 0xFF77DD, 0xAAAAAA};
+
+    /** Copies every setting (look, AI, stats; not the takes, the place or the group) from another NPC. */
+    public void copySettingsFrom(Actor a) {
+        skin = a.skin; behavior = a.behavior; pose = a.pose; held = a.held == null ? null : a.held.copy(1); showName = a.showName;
+        faction = a.faction; onHit = a.onHit; guard = a.guard; aggroRange = a.aggroRange; followStart = a.followStart; followStop = a.followStop;
+        openDoors = a.openDoors; breakBlocks = a.breakBlocks; maxHealth = a.maxHealth; health = a.maxHealth; damage = a.damage; respawn = a.respawn;
+        enabled = a.enabled; sceneEnabled = a.sceneEnabled;
+        customPose = a.customPose; emotion = a.emotion; blink = a.blink; offhand = a.offhand == null ? null : a.offhand.copy(1); scale = a.scale;
+        attachments.clear();
+        for (Attachment at : a.attachments) attachments.add(at.copy());
+        for (int i = 0; i < 4; i++) armor[i] = a.armor[i] == null ? null : a.armor[i].copy(1);
+        waypoints.clear();
+        for (double[] w : a.waypoints) waypoints.add(w.clone());
+        patrolLoop = a.patrolLoop; patrolWait = a.patrolWait; seat = a.seat == null ? null : a.seat.clone();
+        speed = a.speed; lookRange = a.lookRange; wanderRadius = a.wanderRadius; attackDelay = a.attackDelay; regen = a.regen;
+        invulnerable = a.invulnerable; knockback = a.knockback; pushable = a.pushable; takesFallDamage = a.takesFallDamage; nameColor = a.nameColor;
+    }
+
+    /** The stats as one line for actors.txt. */
+    String statsLine() {
+        return speed + "," + lookRange + "," + wanderRadius + "," + attackDelay + "," + regen + "," + nameColor + ","
+                + invulnerable + "," + knockback + "," + pushable + "," + takesFallDamage;
+    }
+
+    void statsFrom(String line) {
+        if (line == null || line.isBlank()) return;
+        String[] v = line.split(",");
+        try {
+            speed = Math.max(0.1f, Math.min(4, Float.parseFloat(v[0])));
+            lookRange = Float.parseFloat(v[1]);
+            wanderRadius = Math.max(1, Float.parseFloat(v[2]));
+            attackDelay = Math.max(2, Integer.parseInt(v[3]));
+            regen = Math.max(0, Float.parseFloat(v[4]));
+            nameColor = Math.floorMod(Integer.parseInt(v[5]), NAME_COLORS.length);
+            invulnerable = Boolean.parseBoolean(v[6]);
+            knockback = Boolean.parseBoolean(v[7]);
+            pushable = Boolean.parseBoolean(v[8]);
+            takesFallDamage = Boolean.parseBoolean(v[9]);
+        } catch (RuntimeException ignored) {}       // older / damaged line: the rest keeps its defaults
+    }
+
     /** Pose from the pose library ("" = none; overrides 'pose'). */
     public String customPose = "";
     /** Face (see {@link Emotions}) and automatic blinking. */
@@ -154,6 +218,11 @@ public final class Actor {
     private final ItemStack[] recPouches = new ItemStack[6];
     private String recPouchText = "";
     private int recReach = -1;
+    /** A take: the posture (smoothed like the player's, see Stance) and the fist fighting guard / punches. */
+    private final float[] recVis = derpcraft.game.Stance.STAND.params.clone(), prevRecVis = derpcraft.game.Stance.STAND.params.clone();
+    private boolean recVisUsed;
+    private float recFists, recPunchL, recPunchR, prevRecFists, prevRecPunchL, prevRecPunchR;
+    private int lastHurtAge = -1000;
     String recPose = "";
     int recEmotion, lastSrc = -1;
     /** Timeline pose keys at the current tick: blend from 'keyFrom' to 'keyTo' by 'keyT'. */
@@ -288,7 +357,7 @@ public final class Actor {
         float d = body.landed;
         body.landed = 0;
         if (age < safeUntil) { body.fallDistance = 0; return; }
-        if (d > 3 && mode == Mode.AI && !body.inWater) hurt(m, (float) Math.ceil(d - 3), null, false, null, "fall");
+        if (d > 3 && mode == Mode.AI && !body.inWater && takesFallDamage) hurt(m, (float) Math.ceil(d - 3), null, false, null, "fall");
     }
     public Mode mode() { return mode; }
 
@@ -313,6 +382,7 @@ public final class Actor {
         recBack = null; recReach = -1;
         java.util.Arrays.fill(recPouches, null); recPouchText = "";
         recPose = ""; recEmotion = 0; lastSrc = -1;
+        recVisUsed = false; recFists = recPunchL = recPunchR = prevRecFists = prevRecPunchL = prevRecPunchR = 0;
         keyFrom = keyTo = null;
         setHome();
     }
@@ -331,6 +401,7 @@ public final class Actor {
     void playFrame(Recording.Frame f, boolean swing) {
         if (f == null) return;
         age++;
+        if (hurtTime > 0) hurtTime--;
         body.px = body.x; body.py = body.y; body.pz = body.z;
         prevHeadYaw = headYaw; prevPitch = body.pitch;
         body.x = f.x; body.y = f.y; body.z = f.z;
@@ -359,6 +430,15 @@ public final class Actor {
             recBack = it == null ? null : new ItemStack(it, 1);
         }
         recReach = (f.flags & Recording.FLAG_BACK_REACH) == 0 ? -1 : recReach + 1;
+        if ((f.flags & Recording.FLAG_HURT) != 0) hurtTime = Math.max(hurtTime, 8);
+        // posture (sit / crawl / lie / deep crouch on the ground) eases like the player's
+        var stances = derpcraft.game.Stance.values();
+        float[] want = stances[Math.max(0, Math.min(stances.length - 1, f.stance))].params;
+        System.arraycopy(recVis, 0, prevRecVis, 0, recVis.length);
+        if (!recVisUsed) { System.arraycopy(want, 0, recVis, 0, recVis.length); System.arraycopy(want, 0, prevRecVis, 0, recVis.length); recVisUsed = true; }
+        else for (int i = 0; i < recVis.length; i++) recVis[i] += (want[i] - recVis[i]) * 0.35f;
+        prevRecFists = recFists; prevRecPunchL = recPunchL; prevRecPunchR = recPunchR;
+        recFists = f.fists; recPunchL = f.punchL; recPunchR = f.punchR;
         String pouches = f.pouches == null ? "" : f.pouches;
         if (!pouches.equals(recPouchText)) {
             recPouchText = pouches;
@@ -403,6 +483,8 @@ public final class Actor {
         if (hurtTime > 0) hurtTime--;
         if (attackCooldown > 0) attackCooldown--;
         if (dead()) { tickDead(m); return; }
+        body.speedMul = speed;
+        if (regen > 0 && health < maxHealth && age - lastHurtAge > 100) health = Math.min(maxHealth, health + regen / 20f);
         Chunk c = w.chunkAt((int) Math.floor(body.x), (int) Math.floor(body.z));
         if (c == null || c.state < Chunk.STATE_LIT) { body.px = body.x; body.py = body.y; body.pz = body.z; animate(); return; }
         closeDoorsBehind(w);
@@ -458,7 +540,7 @@ public final class Actor {
             } else if (d2 > 1.6 * 1.6) moveTo(w, in, tx, ty, tz, true);
             else body.yaw = turn(body.yaw, lookYaw, 30);
             if (!ranged && d2 < 2.4 * 2.4 && Math.abs(ty - body.y) < 2 && attackCooldown == 0) {
-                attackCooldown = 12;
+                attackCooldown = Math.max(2, attackDelay);
                 swingTicks = -1;
                 float dmg = damage > 0 ? damage : (held != null ? Math.max(1, held.item.attackDamage) : 1);
                 if (targetPlayer) m.hitPlayer(this, dmg);
@@ -484,7 +566,7 @@ public final class Actor {
                     else {
                         double tx = wanderX - body.x, tz = wanderZ - body.z;
                         if (tx * tx + tz * tz < 0.5 || wanderWait < -200) {
-                            double a = r.nextDouble() * Math.PI * 2, rad = 2 + r.nextDouble() * 6;
+                            double a = r.nextDouble() * Math.PI * 2, rad = Math.min(2, wanderRadius * 0.25) + r.nextDouble() * Math.max(0, wanderRadius - Math.min(2, wanderRadius * 0.25));
                             wanderX = homeX + Math.cos(a) * rad; wanderZ = homeZ + Math.sin(a) * rad;
                             wanderWait = 40 + r.nextInt(80);
                         } else {
@@ -552,7 +634,7 @@ public final class Actor {
                 }
             }
             lookYaw = body.yaw;
-            if ((behavior == Behavior.LOOK || behavior == Behavior.FOLLOW) && pd2 < 10 * 10) {
+            if ((behavior == Behavior.LOOK || behavior == Behavior.FOLLOW) && pd2 < lookRange * lookRange) {
                 lookAtPlayer = true;
                 lookYaw = (float) Math.toDegrees(Math.atan2(-pdx, pdz));
                 double dy = p.y + 1.62 - (body.y + 1.62);
@@ -740,7 +822,7 @@ public final class Actor {
 
     /** The same with its cause ("hit", "fall", "vehicle"...: blood, the fall of the body). */
     public void hurt(NpcManager m, float amount, Actor attacker, boolean byPlayer, derpcraft.entity.Mob mob, String cause) {
-        if (dead() || mode == Mode.PLAYING || mode == Mode.ON_MARK) return;
+        if (dead() || mode == Mode.PLAYING || mode == Mode.ON_MARK || invulnerable) return;
         if (byPlayer && faction == Faction.FRIENDLY) return;     // friendly NPCs ignore the player's hits
         var ses = derpcraft.game.Session.current;
         if (ses != null && derpcraft.api.EventBus.has(derpcraft.api.Events.EntityDamage.class)) {
@@ -751,12 +833,15 @@ public final class Actor {
         }
         health -= amount;
         hurtTime = 10;
+        lastHurtAge = (int) Math.min(Integer.MAX_VALUE, age);
         derpcraft.game.Blood.body(body.x, body.y, body.z, hitH, amount, cause);
         double ax = byPlayer ? m.player().x : attacker != null ? attacker.body.x : mob != null ? mob.x() : body.x;
         double az = byPlayer ? m.player().z : attacker != null ? attacker.body.z : mob != null ? mob.z() : body.z;
         double kx = body.x - ax, kz = body.z - az, kl = Math.sqrt(kx * kx + kz * kz) + 1e-6;
-        body.mx += kx / kl * 0.4; body.mz += kz / kl * 0.4;
-        if (body.onGround) body.my = 0.36;
+        if (knockback) {
+            body.mx += kx / kl * 0.4; body.mz += kz / kl * 0.4;
+            if (body.onGround) body.my = 0.36;
+        }
         if (health <= 0) {
             health = 0; deathTime = 1; respawnTimer = 0; targetActor = null; targetMob = null; targetPlayer = false;
             startRagdoll(ax, az);
@@ -1063,6 +1148,17 @@ public final class Actor {
         p.gunKick = prevGunKick + (gunKick - prevGunKick) * partial;
         p.gunReload = gunReloadLeft > 0 && gunReloadTotal > 0 ? Math.min(1, 1 - (gunReloadLeft - partial) / gunReloadTotal) : -1;
         p.gunReloadEmpty = gunReloadEmpty;
+        if (rec && recVisUsed) {
+            float[] sv = new float[recVis.length];
+            for (int i = 0; i < sv.length; i++) sv[i] = prevRecVis[i] + (recVis[i] - prevRecVis[i]) * partial;
+            p.stanceVis = sv;
+        }
+        if (rec) {
+            p.fists = prevRecFists + (recFists - prevRecFists) * partial;
+            p.punchLeft = prevRecPunchL + (recPunchL - prevRecPunchL) * partial;
+            p.punchRight = prevRecPunchR + (recPunchR - prevRecPunchR) * partial;
+            if (p.fists > 0.01f) p.held = null;
+        }
         p.gunMelee = gunMelee;
         p.gunMeleeTime = gunMelee >= 0 ? (gunMeleeTicks + partial) / 20f : 0;
         Skins.Skin s = skins.get(skin);

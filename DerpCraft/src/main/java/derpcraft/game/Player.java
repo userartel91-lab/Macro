@@ -21,6 +21,8 @@ public final class Player {
     public float eyeHeight = EYE, prevEyeHeight = EYE;
     /** The posture asked for with Alt + 1..4 (STAND, SIT, LIE, CRAWL). */
     public Stance stance = Stance.STAND;
+    /** Walking / running speed multiplier (NPC setting; the player keeps 1). */
+    public float speedMul = 1;
     /** The posture the player is in now: the asked one plus Shift / Alt + Shift, lowered when there is no room above. */
     public Stance pose = Stance.STAND;
     /** Smoothed model parameters of the posture (see {@link Stance}); the previous tick's copy is for interpolation. */
@@ -176,7 +178,7 @@ public final class Player {
         if (d < 1.0E-4F) return;
         d = (float) Math.sqrt(d);
         if (d < 1.0F) d = 1.0F;
-        d = speed / d;
+        d = speed * speedMul / d;
         strafe *= d * 0.98f;
         forward *= d * 0.98f;
         float r = (float) Math.toRadians(yaw);

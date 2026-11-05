@@ -354,7 +354,8 @@ public final class Session implements GameApi {
         // world simulation
         world.runScheduledTicks();
         world.tickBlockEntities();
-        randomTicks();
+        npcs.randomTicking = true;                 // grass spreading, leaves decaying...: never part of a take or a scene snapshot
+        try { randomTicks(); } finally { npcs.randomTicking = false; }
         tickEntities();
         mobs.tick();
         vehicles.tick();
@@ -783,7 +784,11 @@ public final class Session implements GameApi {
     public void npcHitPlayer(double ax, double az, float dmg) { hurtPlayer(dmg, "npc", ax, az); }
 
     /** The player's skin (Settings.playerSkin from the NPC skins list; Steve when it is gone), or null before the NPCs exist. */
-    public derpcraft.npc.Skins.Skin playerSkin() { return npcs == null ? null : npcs.skins.get(game.settings.playerSkin); }
+    public derpcraft.npc.Skins.Skin playerSkin() {
+        if (npcs == null) return null;
+        String acting = npcs.actingSkin();          // recording "as the NPC": you wear its skin
+        return npcs.skins.get(acting != null ? acting : game.settings.playerSkin);
+    }
 
     /** Something hit the player from (fromX, fromZ): damage in survival, knockback always. */
     public void hurtPlayer(float dmg, String cause, double fromX, double fromZ) {
@@ -1562,13 +1567,14 @@ public final class Session implements GameApi {
             var actor = npcs.pick(player.x, player.y + player.eyeHeight, player.z, dx, dy, dz, max);
             if (actor != null) { swingArm(); game.setScreen(new derpcraft.gui.NpcHub(game, this, actor)); return; }
         }
-        if (targetMob != null && !npcs.recording()) {
+        if (targetMob != null) {
             derpcraft.entity.Mob m = targetMob;
             if (button == GLFW_MOUSE_BUTTON_LEFT) {
                 swingArm();
                 ItemStack h = inv.held();
                 float dmg = h != null ? Math.max(1, h.item.attackDamage) : 1;
                 if (!player.onGround && player.my < 0 && !player.inWater) dmg *= 1.5f;   // critical hit when falling
+                if (npcs.recording()) npcs.recordHit("mob:" + m.type.id, dmg, m.x(), m.y(), m.z());   // the take hits it too
                 int wear = h != null && survival() ? h.item.wearOnHit() : 0;
                 if (m.hurt(dmg, "player", true, null, null, player.x, player.z) && wear > 0) {
                     if (h.damageItem(wear)) inv.set(inv.selected, h.count <= 0 ? null : h);
@@ -1584,8 +1590,12 @@ public final class Session implements GameApi {
                 if (done[0]) { swingArm(); return; }
             }
         }
-        if (button == GLFW_MOUSE_BUTTON_LEFT && targetActor != null && !npcs.recording()) {
+        if (button == GLFW_MOUSE_BUTTON_LEFT && targetActor != null && targetActor != npcs.recordingActor()) {
             swingArm();
+            if (npcs.recording()) {
+                ItemStack h = inv.held();
+                npcs.recordHit("npc:" + targetActor.id, h != null ? Math.max(1, h.item.attackDamage) : 1, targetActor.x(), targetActor.y(), targetActor.z());
+            }
             npcs.playerAttack(targetActor);
             breakCooldown = 6;
             return;
@@ -2386,8 +2396,9 @@ public final class Session implements GameApi {
             int alpha = p[2] > 32 ? (int) (255 * Math.max(0, (48 - p[2]) / 16)) : 255;
             if (alpha < 10) continue;
             boolean hostile = a.faction == derpcraft.npc.Actor.Faction.AGGRESSIVE;
+            int col = a.nameColor > 0 ? derpcraft.npc.Actor.NAME_COLORS[a.nameColor] : hostile ? 0xFF3C3C : 0xFFFFFF;
             g.fill(x - 1, y - 1, x + g.textWidth(n) + 1, y + 8, ((hostile ? alpha / 2 : alpha / 4) << 24) | (hostile ? 0x200000 : 0));
-            g.text(n, x, y, (alpha << 24) | (hostile ? 0xFF3C3C : 0xFFFFFF), false);
+            g.text(n, x, y, (alpha << 24) | col, false);
         }
         if (npcs.recording()) {
             var a = npcs.recordingActor();

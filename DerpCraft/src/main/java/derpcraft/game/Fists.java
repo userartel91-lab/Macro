@@ -85,19 +85,19 @@ public final class Fists {
         double fx = -Math.sin(yr), fz = Math.cos(yr);
         boolean recording = s.npcs != null && s.npcs.recording();
         if (s.targetMob != null) {
-            if (!recording) {
-                var m = s.targetMob;
-                m.hurt(dmg, "player", true, null, null, p.x, p.z);
-                // a hook knocks a little to the side, a running punch further back
-                double side = hook ? (left ? 1 : -1) * 0.25 : 0, k = p.sprinting ? 0.5 : 0.15;
-                m.push(fx * k + -fz * side, 0.08, fz * k + fx * side);
-                if (p.sprinting) p.sprinting = false;
-            }
+            if (recording) s.npcs.recordHit("mob:" + s.targetMob.type.id, dmg, s.targetMob.x(), s.targetMob.y(), s.targetMob.z());
+            var m = s.targetMob;
+            m.hurt(dmg, "player", true, null, null, p.x, p.z);
+            // a hook knocks a little to the side, a running punch further back
+            double side = hook ? (left ? 1 : -1) * 0.25 : 0, k = p.sprinting ? 0.5 : 0.15;
+            m.push(fx * k + -fz * side, 0.08, fz * k + fx * side);
+            if (p.sprinting) p.sprinting = false;
             landed(left);
             return;
         }
         if (s.targetActor != null) {
-            if (!recording) s.targetActor.hurt(s.npcs, dmg, null, true);
+            if (recording) s.npcs.recordHit("npc:" + s.targetActor.id, dmg, s.targetActor.x(), s.targetActor.y(), s.targetActor.z());
+            s.targetActor.hurt(s.npcs, dmg, null, true);
             landed(left);
             return;
         }

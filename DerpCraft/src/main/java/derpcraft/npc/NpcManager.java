@@ -40,6 +40,18 @@ public final class NpcManager {
     /** Aggressive NPCs also attack a player in creative mode (for filming fights). */
     public boolean attackCreative;
     public int countdownSeconds = 3;
+    /**
+     * A take also records what the world does around the player because of them (explosions, fire, water and lava
+     * flowing, falling sand, doors and redstone set off...), not only the blocks they click. Changes of the scene's
+     * other actors and of NPC AIs are never recorded.
+     */
+    public boolean recordWorld = true;
+    /** Record "as the NPC": you start where the NPC stands, wear its skin while acting, and go back to your place afterwards. */
+    public boolean recordAsNpc;
+    /** Groups (lower case) whose scenes leave no trace: after a play the changed blocks come back as they were before it. */
+    private final Set<String> restoreAfter = new HashSet<>();
+    /** Set by the session around random block ticks (grass spreading, leaves decaying...): those never go into takes or snapshots. */
+    public boolean randomTicking;
     /** Scene recorded and played from the hub. */
     public String currentScene = "main";
     /** attacks[a][b]: NPCs of faction a attack NPCs of faction b (Actor.Faction order). */
@@ -52,6 +64,10 @@ public final class NpcManager {
         public int tick, gatherTicks, length, start;
         public boolean gathering = true;
         final List<Actor> cast = new ArrayList<>();
+        /** Only these NPCs (ids) play (a Scene Block with some NPCs ticked); null = the whole cast. */
+        Collection<Integer> only;
+        /** The world as it was before this play (blocks it changed), for "restore after the scene". */
+        final WorldSnapshot snap = new WorldSnapshot();
         SceneRun(String name) { this.name = name; }
     }
 
@@ -104,7 +120,10 @@ public final class NpcManager {
         attacks[Actor.Faction.AGGRESSIVE.ordinal()][Actor.Faction.NEUTRAL.ordinal()] = true;
         attacks[Actor.Faction.AGGRESSIVE.ordinal()][Actor.Faction.FRIENDLY.ordinal()] = true;
         load();
-        s.world.blockRecorder = this::blockChanged;
+        s.world.blockRecorder = new World.BlockRecorder() {
+            @Override public void changed(int x, int y, int z, int before, int after) { blockChanged(x, y, z, before, after); }
+            @Override public void before(int x, int y, int z, int old, int state) { beforeChange(x, y, z); }
+        };
     }
 
     World world() { return s.world; }
@@ -124,6 +143,20 @@ public final class NpcManager {
         if (groupEnabled(a.group)) actors.add(a); else hidden.add(a);
         save();
         return a;
+    }
+
+    /** A copy of an NPC (all its settings, no takes) next to it in the same group. */
+    public Actor duplicate(Actor a) {
+        Actor c = new Actor(nextId++, uniqueName(a.name, a.group));
+        c.group = a.group;
+        c.copySettingsFrom(a);
+        double yr = Math.toRadians(a.yaw() + 90);
+        c.place(a.x() - Math.sin(yr), a.y(), a.z() + Math.cos(yr), a.yaw());
+        c.setHome();
+        hidden.add(c);
+        refreshPresence();
+        save();
+        return c;
     }
 
     /** Names are unique inside a group (the same actor name can be in several groups). */
@@ -251,6 +284,11 @@ public final class NpcManager {
         }
         List<CamKey> ck = camKeys.remove(k.toLowerCase(Locale.ROOT));
         if (ck != null) camKeys.put(name.toLowerCase(Locale.ROOT), ck);
+        WorldSnapshot un = undo(k, false);
+        undo.remove(k.toLowerCase(Locale.ROOT));
+        deleteSnapshotFile(k);
+        if (un != null) { undo.put(name.toLowerCase(Locale.ROOT), un); saveSnapshot(name); }
+        if (restoreAfter.remove(k.toLowerCase(Locale.ROOT))) restoreAfter.add(name.toLowerCase(Locale.ROOT));
         if (currentScene.equalsIgnoreCase(k)) currentScene = name;
         save();
     }
@@ -262,6 +300,9 @@ public final class NpcManager {
         stopScene(k);
         for (Actor a : members(k)) remove(a);
         groups.remove(k);
+        undo.remove(k.toLowerCase(Locale.ROOT));
+        deleteSnapshotFile(k);
+        restoreAfter.remove(k.toLowerCase(Locale.ROOT));
         if (currentScene.equalsIgnoreCase(k)) currentScene = groups.isEmpty() ? newGroup("main") : groups.keySet().iterator().next();
         save();
     }
@@ -272,18 +313,12 @@ public final class NpcManager {
         if (k == null) return null;
         String name = newGroup(k + " copy");
         if (withTakes) for (CamKey ck : camKeys(k)) camKeys(name).add(new CamKey(ck.tick, ck.type, ck.ref));
+        if (restoresWorld(k)) restoreAfter.add(name.toLowerCase(Locale.ROOT));
         for (Actor a : members(k)) {
             Actor c = new Actor(nextId++, a.name);
             c.group = name;
-            c.skin = a.skin; c.behavior = a.behavior; c.pose = a.pose; c.held = a.held == null ? null : a.held.copy(1); c.showName = a.showName;
-            c.faction = a.faction; c.onHit = a.onHit; c.guard = a.guard; c.aggroRange = a.aggroRange; c.followStart = a.followStart; c.followStop = a.followStop;
-            c.openDoors = a.openDoors; c.breakBlocks = a.breakBlocks; c.maxHealth = a.maxHealth; c.health = a.maxHealth; c.damage = a.damage; c.respawn = a.respawn;
-            c.enabled = a.enabled; c.sceneEnabled = a.sceneEnabled;
-            c.customPose = a.customPose; c.emotion = a.emotion; c.blink = a.blink; c.offhand = a.offhand == null ? null : a.offhand.copy(1); c.scale = a.scale;
-            for (Attachment at : a.attachments) c.attachments.add(at.copy());
-            for (int i = 0; i < 4; i++) c.armor[i] = a.armor[i] == null ? null : a.armor[i].copy(1);
-            for (double[] w : a.waypoints) c.waypoints.add(w.clone());
-            c.patrolLoop = a.patrolLoop; c.patrolWait = a.patrolWait; c.seat = a.seat == null ? null : a.seat.clone();
+            c.copySettingsFrom(a);
+            c.watchId = a.watchId; c.rideId = a.rideId; c.rideCreature = a.rideCreature; c.vehicleId = a.vehicleId; c.vehicleSeat = a.vehicleSeat;
             c.homeX = a.homeX; c.homeY = a.homeY; c.homeZ = a.homeZ; c.homeYaw = a.homeYaw;
             c.place(a.x(), a.y(), a.z(), a.yaw());
             Track t = a.track(k);
@@ -425,6 +460,193 @@ public final class NpcManager {
         if (!guardEvent) lastPlayerAttacker = null;
     }
 
+    // ================================================================ world snapshots ("restore world")
+    /** One block as it was: state and block entity data (chest items, sign text...; null = none). */
+    record Snap(int x, int y, int z, int state, Map<String, String> be) {}
+
+    /** Blocks as they were before a scene / a take changed them (first state seen wins), dropped items to take away again. */
+    static final class WorldSnapshot {
+        final LinkedHashMap<Long, Snap> blocks = new LinkedHashMap<>();
+        final List<derpcraft.entity.ItemEntity> items = new ArrayList<>();
+        final Set<Integer> vehicles = new HashSet<>();
+        boolean isEmpty() { return blocks.isEmpty() && items.isEmpty(); }
+        /** Adds another (later) snapshot: positions already here keep their older state. */
+        void absorb(WorldSnapshot later) {
+            for (var e : later.blocks.entrySet()) blocks.putIfAbsent(e.getKey(), e.getValue());
+            items.addAll(later.items);
+            vehicles.addAll(later.vehicles);
+        }
+    }
+
+    static long posKey(int x, int y, int z) { return ((long) (x & 0x3FFFFFF) << 38) | ((long) (z & 0x3FFFFFF) << 12) | (y & 0xFFF); }
+
+    /** Not yet restored changes of each group's plays and takes (lower case group), for the "Restore world" button. */
+    private final Map<String, WorldSnapshot> undo = new HashMap<>();
+    /** Groups whose snapshot file was looked for already (the hub asks every frame). */
+    private final Set<String> filesChecked = new HashSet<>();
+    /** The world before the take being recorded (a cancelled take puts exactly this back). */
+    private WorldSnapshot recSnap;
+    /** True while the manager itself changes blocks (replaying takes, reverting, restoring): not a change to remember. */
+    private boolean applying;
+    /** True while NPCs tick (scene actors, AI): their block changes never go into the player's take. */
+    private boolean npcTicking;
+
+    /** Remembers a block (state and block entity) before it is changed, unless the snapshot has it already. */
+    private void remember(WorldSnapshot snap, int x, int y, int z) {
+        if (snap == null) return;
+        long k = posKey(x, y, z);
+        if (snap.blocks.containsKey(k)) return;
+        Map<String, String> data = null;
+        var be = s.world.existingBlockEntity(x, y, z);
+        if (be != null) { data = new LinkedHashMap<>(); try { be.save(data); } catch (RuntimeException e) { data = null; } }
+        snap.blocks.put(k, new Snap(x, y, z, s.world.getState(x, y, z), data));
+    }
+
+    /** A block the scene / take changes itself (no items spilled: a snapshot can put the contents back). */
+    private void setSceneBlock(WorldSnapshot snap, int x, int y, int z, int state) {
+        remember(snap, x, y, z);
+        int old = s.world.getState(x, y, z);
+        if (old == state) return;
+        applying = true;
+        try {
+            s.world.setBlockNoDrop(x, y, z, state);
+            // a take breaks something: the pieces fly like when the player broke it
+            if ((state >> 4) == 0 && (old >> 4) != 0 && s.game.entities != null) {
+                Block b = Blocks.byId(old >> 4);
+                s.game.entities.spawnBreakParticles(s.world, x, y, z, b, old & 15);
+            }
+        } finally { applying = false; }
+    }
+
+    /** Whether a group's scenes put the world back after they played. */
+    public boolean restoresWorld(String group) { return group != null && restoreAfter.contains(group.toLowerCase(Locale.ROOT)); }
+
+    public void setRestoresWorld(String group, boolean on) {
+        if (group == null) return;
+        if (on) restoreAfter.add(group.toLowerCase(Locale.ROOT)); else restoreAfter.remove(group.toLowerCase(Locale.ROOT));
+        save();
+    }
+
+    /** Number of blocks a "Restore world" of the group would put back (0 = nothing to restore). */
+    public int restorable(String group) {
+        WorldSnapshot w = undo(group, false);
+        int n = w == null ? 0 : w.blocks.size();
+        for (SceneRun r : runs) if (r.name.equalsIgnoreCase(group)) n += r.snap.blocks.size();
+        if (recSnap != null && group.equalsIgnoreCase(recScene)) n += recSnap.blocks.size();
+        return n;
+    }
+
+    private WorldSnapshot undo(String group, boolean create) {
+        String k = group.toLowerCase(Locale.ROOT);
+        WorldSnapshot w = undo.get(k);
+        if (w == null && filesChecked.add(k)) { w = loadSnapshot(group); if (w != null) undo.put(k, w); }
+        if (w == null && create) { w = new WorldSnapshot(); undo.put(k, w); }
+        return w;
+    }
+
+    /** A play / take of a group is over: its changes stay and can be restored later with the button (snapshot kept and saved). */
+    private void keepForUndo(String group, WorldSnapshot snap) {
+        if (snap == null || snap.isEmpty()) return;
+        undo(group, true).absorb(snap);
+        saveSnapshot(group);
+    }
+
+    /**
+     * Puts the world back as it was before the group's plays and takes that were not restored yet ("Restore world"):
+     * blocks with their contents, items the actors dropped, cars they blew up. Returns the number of blocks restored.
+     */
+    public int restoreWorld(String group) {
+        stopScene(group);
+        WorldSnapshot w = undo(group, false);
+        undo.remove(group.toLowerCase(Locale.ROOT));
+        deleteSnapshotFile(group);
+        return w == null ? 0 : apply(w, group);
+    }
+
+    /** Writes a snapshot back into the world. Blocks in chunks that are not loaded stay in the group's snapshot. */
+    private int apply(WorldSnapshot w, String group) {
+        derpcraft.gun.Ballistics.DOOR_HITS.clear();
+        derpcraft.gun.Ballistics.BLOCK_HITS.clear();
+        int n = 0;
+        WorldSnapshot left = new WorldSnapshot();
+        applying = true;
+        try {
+            List<Snap> list = new ArrayList<>(w.blocks.values());
+            for (int i = list.size() - 1; i >= 0; i--) {
+                Snap b = list.get(i);
+                if (!s.world.isLoaded(b.x(), b.z())) { left.blocks.put(posKey(b.x(), b.y(), b.z()), b); continue; }
+                s.world.setBlockNoDrop(b.x(), b.y(), b.z(), b.state());
+                if (b.be() != null) {
+                    var be = s.world.getBlockEntity(b.x(), b.y(), b.z());
+                    if (be != null) { try { be.load(new LinkedHashMap<>(b.be())); } catch (RuntimeException ignored) {} be.markDirty(); }
+                }
+                n++;
+            }
+        } finally { applying = false; }
+        for (var ie : w.items) ie.dead = true;
+        if (s.vehicles != null) for (int id : w.vehicles) s.vehicles.repairForScene(id);
+        if (!left.blocks.isEmpty() && group != null) keepForUndo(group, left);
+        return n;
+    }
+
+    // ---------------------------------------------------------------- snapshot files (npc/undo/<group>.txt)
+    private Path snapshotFile(String group) { return dir.resolve("undo").resolve(group.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "_") + ".txt"); }
+
+    private void saveSnapshot(String group) {
+        WorldSnapshot w = undo.get(group.toLowerCase(Locale.ROOT));
+        if (w == null || w.blocks.isEmpty()) { deleteSnapshotFile(group); return; }
+        StringBuilder sb = new StringBuilder("# blocks to put back with \"Restore world\": x y z state [block entity]\n# group=" + group + "\n");
+        for (Snap b : w.blocks.values()) {
+            sb.append(b.x()).append(' ').append(b.y()).append(' ').append(b.z()).append(' ').append(b.state());
+            if (b.be() != null) {
+                sb.append(' ');
+                boolean first = true;
+                for (var e : b.be().entrySet()) {
+                    if (!first) sb.append('&');
+                    first = false;
+                    sb.append(java.net.URLEncoder.encode(e.getKey(), java.nio.charset.StandardCharsets.UTF_8)).append('=')
+                      .append(java.net.URLEncoder.encode(e.getValue() == null ? "" : e.getValue(), java.nio.charset.StandardCharsets.UTF_8));
+                }
+                if (first) sb.append('-');
+            }
+            sb.append('\n');
+        }
+        try {
+            Files.createDirectories(snapshotFile(group).getParent());
+            Files.writeString(snapshotFile(group), sb.toString());
+        } catch (IOException e) { System.err.println("Cannot save the world snapshot of " + group + ": " + e); }
+    }
+
+    private WorldSnapshot loadSnapshot(String group) {
+        Path f = snapshotFile(group);
+        if (!Files.exists(f)) return null;
+        WorldSnapshot w = new WorldSnapshot();
+        try {
+            for (String line : Files.readAllLines(f)) {
+                if (line.isBlank() || line.startsWith("#")) continue;
+                String[] v = line.trim().split(" ");
+                if (v.length < 4) continue;
+                Map<String, String> be = null;
+                if (v.length > 4) {
+                    be = new LinkedHashMap<>();
+                    if (!v[4].equals("-")) for (String kv : v[4].split("&")) {
+                        int eq = kv.indexOf('=');
+                        if (eq < 0) continue;
+                        be.put(java.net.URLDecoder.decode(kv.substring(0, eq), java.nio.charset.StandardCharsets.UTF_8),
+                               java.net.URLDecoder.decode(kv.substring(eq + 1), java.nio.charset.StandardCharsets.UTF_8));
+                    }
+                }
+                int x = Integer.parseInt(v[0]), y = Integer.parseInt(v[1]), z = Integer.parseInt(v[2]);
+                w.blocks.put(posKey(x, y, z), new Snap(x, y, z, Integer.parseInt(v[3]), be));
+            }
+        } catch (IOException | RuntimeException e) { System.err.println("Cannot read " + f + ": " + e); return null; }
+        return w.blocks.isEmpty() ? null : w;
+    }
+
+    private void deleteSnapshotFile(String group) {
+        try { Files.deleteIfExists(snapshotFile(group)); } catch (IOException ignored) {}
+    }
+
     // ================================================================ scenes
     /** All scene names: the groups, plus scenes NPCs have takes for. */
     public List<String> sceneNames() {
@@ -475,6 +697,7 @@ public final class NpcManager {
         releasePreview();
         SceneRun run = new SceneRun(name);
         run.start = Math.max(0, from);
+        run.only = only == null ? null : new ArrayList<>(only);
         for (Actor a : actors) {
             Track t = a.track(name);
             Track.Take tk = t == null ? null : t.take();
@@ -483,8 +706,9 @@ public final class NpcManager {
             boolean busy = false;
             for (SceneRun o : runs) if (o.cast.contains(a)) busy = true;
             if (busy) continue;
+            if (!a.enabled) continue;
             if (a.dead()) a.revive();
-            repairVehicles(tk);
+            repairVehicles(tk, run.snap);
             if (s.vehicles != null) s.vehicles.cancelBoard(a);
             a.calm();
             a.sceneTrack = t;
@@ -504,22 +728,34 @@ public final class NpcManager {
 
     /** Stops every scene; actors continue with their AI where they are. */
     public void stopScene() {
-        for (SceneRun r : runs) for (Actor a : r.cast) if (a.mode != Actor.Mode.AI) a.toAI();
+        List<SceneRun> all = new ArrayList<>(runs);
         runs.clear();
+        for (SceneRun r : all) finishRun(r);
         if (linkCamera && s.cam.playing()) s.cam.stop();
     }
 
     public void stopScene(String name) {
+        boolean stopped = false;
         for (Iterator<SceneRun> it = runs.iterator(); it.hasNext(); ) {
             SceneRun r = it.next();
             if (!r.name.equalsIgnoreCase(name)) continue;
-            for (Actor a : r.cast) if (a.mode != Actor.Mode.AI) a.toAI();
             it.remove();
+            finishRun(r);
+            stopped = true;
         }
+        // the camera path / cuts started with the hub's scene stop with it (they used to run on alone)
+        if (stopped && linkCamera && name.equalsIgnoreCase(currentScene) && s.cam.playing()) s.cam.stop();
+    }
+
+    /** A play is over (ended or stopped): actors back to their AI; the world is restored or its changes kept for "Restore world". */
+    private void finishRun(SceneRun r) {
+        for (Actor a : r.cast) if (a.mode != Actor.Mode.AI) a.toAI();
+        if (restoresWorld(r.name)) apply(r.snap, r.name);
+        else keepForUndo(r.name, r.snap);
     }
 
     /** Cars a take drives that were blown up (by an earlier replay or by hand) are whole again when the scene starts. */
-    private void repairVehicles(Track.Take tk) {
+    private void repairVehicles(Track.Take tk, WorldSnapshot snap) {
         if (s.vehicles == null) return;
         java.util.Set<Integer> ids = new java.util.HashSet<>();
         for (int i = 0; i < tk.rec.length(); i++) {
@@ -527,6 +763,7 @@ public final class NpcManager {
             if (f != null && f.vehicle >= 0) ids.add(f.vehicle);
         }
         for (int id : ids) s.vehicles.repairForScene(id);
+        if (snap != null) snap.vehicles.addAll(ids);
     }
 
     /** Undoes the scene's block changes and puts its cast on their marks. */
@@ -534,11 +771,14 @@ public final class NpcManager {
 
     public void resetScene(String name) {
         stopScene(name);
-        revertBlocks(name);
+        // the world as it was before the plays (with chest contents...); without a snapshot: the takes' own "before" blocks
+        if (restoreWorld(name) == 0) {
+            revertBlocks(name, null, null);
+        }
         for (Actor a : cast(name)) {
             Track.Take tk = a.track(name).take();
             Recording.Frame f = tk.frame(tk.offset);
-            repairVehicles(tk);
+            repairVehicles(tk, null);
             if (s.vehicles != null) s.vehicles.cancelBoard(a);
             if (a.dead()) a.revive();
             a.place(f.x, f.y, f.z, f.yaw);
@@ -584,10 +824,10 @@ public final class NpcManager {
         previewing.clear();
     }
 
-    /** Blocks changed by the scene's takes, oldest first, with the scene tick they happen at. */
-    private List<Object[]> sceneBlocks(String scene) {
+    /** Blocks changed by the scene's takes (of 'cast' only; null = every NPC of it), oldest first, with the scene tick they happen at. */
+    private List<Object[]> sceneBlocks(String scene, Collection<Actor> cast) {
         List<Object[]> all = new ArrayList<>();
-        for (Actor a : all()) {
+        for (Actor a : cast != null ? cast : all()) {
             Track t = a.track(scene);
             Track.Take tk = t == null ? null : t.take();
             if (tk == null) continue;
@@ -601,22 +841,23 @@ public final class NpcManager {
         return all;
     }
 
-    private void revertBlocks(String scene) {
+    /** Puts the blocks the takes change back to how they were when recorded (so a replay starts like the take did); remembered in 'snap'. */
+    private void revertBlocks(String scene, Collection<Actor> cast, WorldSnapshot snap) {
         derpcraft.gun.Ballistics.DOOR_HITS.clear();          // the cracks of shot doors go with the blocks
         derpcraft.gun.Ballistics.BLOCK_HITS.clear();
-        List<Object[]> all = sceneBlocks(scene);
+        List<Object[]> all = sceneBlocks(scene, cast);
         for (int i = all.size() - 1; i >= 0; i--) {
             int[] p = (int[]) all.get(i)[1];
-            s.world.setBlock(p[0], p[1], p[2], ((Recording.BlockAction) all.get(i)[2]).before());
+            setSceneBlock(snap, p[0], p[1], p[2], ((Recording.BlockAction) all.get(i)[2]).before());
         }
     }
 
     /** Blocks as they are at a tick of the scene (for starting in the middle). */
-    private void applyBlocksBefore(String scene, int tick) {
-        for (Object[] o : sceneBlocks(scene)) {
+    private void applyBlocksBefore(String scene, Collection<Actor> cast, int tick, WorldSnapshot snap) {
+        for (Object[] o : sceneBlocks(scene, cast)) {
             if ((int) o[0] >= tick) break;
             int[] p = (int[]) o[1];
-            s.world.setBlock(p[0], p[1], p[2], ((Recording.BlockAction) o[2]).after());
+            setSceneBlock(snap, p[0], p[1], p[2], ((Recording.BlockAction) o[2]).after());
         }
     }
 
@@ -627,8 +868,10 @@ public final class NpcManager {
             for (Actor a : run.cast) if (a.mode == Actor.Mode.GOTO_MARK) all = false;
             if (!all && run.gatherTicks < 600) return;
             for (Actor a : run.cast) { a.snapToMark(); a.mode = Actor.Mode.ON_MARK; }   // stragglers teleport after 30 s
-            revertBlocks(run.name);
-            if (run.start > 0) applyBlocksBefore(run.name, run.start);
+            // only the playing NPCs' blocks: a Scene Block that plays some of the cast leaves the others' blocks alone
+            Collection<Actor> who = run.only == null ? null : run.cast;
+            revertBlocks(run.name, who, run.snap);
+            if (run.start > 0) applyBlocksBefore(run.name, who, run.start, run.snap);
             run.gathering = false;
             run.tick = run.start;
             for (Actor a : run.cast) a.mode = Actor.Mode.PLAYING;
@@ -642,13 +885,13 @@ public final class NpcManager {
             if (a.mode != Actor.Mode.PLAYING || a.sceneTake == null) continue;
             Track.Take tk = a.sceneTake;
             if (run.tick >= tk.end()) { a.toAI(); continue; }       // this take is over: back to the AI
-            playActor(a, a.sceneTrack, tk, run.tick);
+            playActor(a, a.sceneTrack, tk, run.tick, run.snap);
         }
         run.tick++;
     }
 
     /** One scene tick of a take: the frame, block changes, item actions, lines and pose keys. */
-    private void playActor(Actor a, Track t, Track.Take tk, int tick) {
+    private void playActor(Actor a, Track t, Track.Take tk, int tick, WorldSnapshot snap) {
         Object[] pk = t == null ? null : t.poseAt(tick);
         a.keyFrom = pk == null ? null : (String) pk[0]; a.keyTo = pk == null ? null : (String) pk[1]; a.keyT = pk == null ? 0 : (float) pk[2];
         if (tick < tk.offset) { a.hold(); a.body.yaw = a.markYaw; return; }      // waits for its start on the timeline
@@ -672,14 +915,14 @@ public final class NpcManager {
         for (var b : tk.rec.blocks) {
             if (!tk.inside(b.tick()) || (int) Math.floor(tk.sceneTick(b.tick())) != tick) continue;
             int[] p = tk.transformBlock(b.x(), b.y(), b.z());
-            s.world.setBlock(p[0], p[1], p[2], b.after());
+            setSceneBlock(snap, p[0], p[1], p[2], b.after());
         }
         for (var c : tk.rec.chat) if (tk.inside(c.tick()) && (int) Math.floor(tk.sceneTick(c.tick())) == tick && recordChat) s.chat("<" + a.name + "> " + c.text());
-        for (var it : tk.rec.items) if (tk.inside(it.tick()) && (int) Math.floor(tk.sceneTick(it.tick())) == tick) itemAction(a, tk, it);
+        for (var it : tk.rec.items) if (tk.inside(it.tick()) && (int) Math.floor(tk.sceneTick(it.tick())) == tick) itemAction(a, tk, it, snap);
     }
 
     /** Replays a recorded pickup / drop / shot. */
-    private void itemAction(Actor a, Track.Take tk, Recording.ItemAction it) {
+    private void itemAction(Actor a, Track.Take tk, Recording.ItemAction it, WorldSnapshot snap) {
         double ex = a.x(), ey = a.y() + 1.5 * a.scale, ez = a.z();
         switch (it.kind()) {
             case 0 -> {   // picked up: the nearest such item next to the actor disappears
@@ -700,6 +943,7 @@ public final class NpcManager {
                 ie.mx = d[0] * 0.3; ie.my = it.dy() * 0.3 + 0.1; ie.mz = d[1] * 0.3;
                 ie.pickupDelay = 40;
                 s.world.entities.add(ie);
+                if (snap != null) snap.items.add(ie);      // restoring the world takes it away again
             }
             case 3 -> {   // a gun shot: the same direction (moved / turned with the take), bullets hit and show it, no damage
                 var gun = derpcraft.gun.Guns.get(it.item());
@@ -716,6 +960,7 @@ public final class NpcManager {
                 var gun = derpcraft.gun.Guns.get(it.item());
                 if (gun != null) a.gunMelee(gun, it.count());
             }
+            case 6 -> replayHit(a, tk, it);
             default -> {  // threw / shot a projectile
                 double[] d = tk.transformDir(it.dx(), it.dz());
                 var p = s.mobs.shoot(it.item(), ex + d[0] * 0.3, ey - 0.1, ez + d[1] * 0.3, d[0], it.dy(), d[1], it.count() / 100f, false, null);
@@ -723,6 +968,40 @@ public final class NpcManager {
                 a.swing();
             }
         }
+    }
+
+    /**
+     * A recorded hit on an NPC or a creature: the actor swings; with "replayed hits hurt" the same NPC (or the nearest
+     * creature of that type next to the actor) takes the damage again.
+     */
+    private void replayHit(Actor a, Track.Take tk, Recording.ItemAction it) {
+        a.swing();
+        if (!replayGunDamage) return;
+        float dmg = Math.max(0.5f, it.count() / 10f);
+        String tg = it.item();
+        if (tg.startsWith("npc:")) {
+            Actor t = byId((int) num(tg.substring(4), -1));
+            if (t != null && t != a && inWorld(t) && t.mode == Actor.Mode.AI) {
+                double dx = t.x() - a.x(), dz = t.z() - a.z();
+                if (dx * dx + dz * dz < 6 * 6) t.hurt(this, dmg, a, false);
+            }
+        } else if (tg.startsWith("mob:") && s.mobs != null) {
+            String type = tg.substring(4);
+            derpcraft.entity.Mob best = null;
+            double bd = 5 * 5;
+            for (var m : s.mobs.list()) {
+                if (!m.alive() || !m.type.id.equals(type)) continue;
+                double d = m.distSq(a.x(), a.y(), a.z());
+                if (d < bd) { bd = d; best = m; }
+            }
+            if (best != null) best.hurt(dmg, "npc", false, null, a, a.x(), a.z());
+        }
+    }
+
+    /** The player hit an NPC ("npc:ID") or a creature ("mob:TYPE") while recording: the take replays the hit. */
+    public void recordHit(String target, float damage, double tx, double ty, double tz) {
+        if (take == null || !takeStarted) return;
+        take.items.add(new Recording.ItemAction(take.length(), 6, target, Math.round(damage * 10), tx, ty, tz, 0, 0, 0));
     }
 
     /** An NPC uses the item in its hand at a target (throws / shoots it, or the item's own NPC use). */
@@ -802,11 +1081,16 @@ public final class NpcManager {
         releasePreview();
         currentScene = a.group;          // a take always belongs to the NPC's own group (= its scene)
         recScene = a.group;
+        // an NPC that is switched off (itself or its group) is put back into the world: you record it, it must be there
+        if (!groupEnabled(a.group)) { ensureGroup(a.group); groups.put(groupKey(a.group), true); }
+        if (!a.enabled) a.enabled = true;
+        refreshPresence();
         fromTick = Math.max(0, fromTick);
         Track tr = a.trackOrNew(recScene);
         Track.Take base = tr.take();
-        revertBlocks(recScene);
-        if (fromTick > 0) applyBlocksBefore(recScene, fromTick);
+        recSnap = new WorldSnapshot();
+        revertBlocks(recScene, null, recSnap);
+        if (fromTick > 0) applyBlocksBefore(recScene, null, fromTick, recSnap);
         take = new Recording();
         boolean punch = fromTick > 0 && base != null && fromTick > base.offset && fromTick < base.end();
         recTake = new Track.Take(take, null);
@@ -823,10 +1107,20 @@ public final class NpcManager {
                 take.items.add(new Recording.ItemAction((int) (base.sceneTick(it.tick()) - base.offset), it.kind(), it.item(), it.count(), it.x(), it.y(), it.z(), d[0], it.dy(), d[1]));
             }
             Recording.Frame f = base.frame(fromTick);
+            recReturn = recordAsNpc ? new double[]{s.player.x, s.player.y, s.player.z, s.player.yaw, s.player.pitch} : null;
             s.player.setPos(f.x, f.y, f.z);
             s.player.yaw = f.yaw; s.player.pitch = f.pitch;
             recordPose = f.pose; recordEmotion = f.emotion;
-        } else { recordPose = ""; recordEmotion = 0; }
+        } else {
+            recordPose = ""; recordEmotion = 0;
+            // "as the NPC": you take its place (and look); you go back to where you stood when the take ends
+            recReturn = null;
+            if (recordAsNpc && inWorld(a) && !a.dead() && !(s.vehicles != null && s.vehicles.riding())) {
+                recReturn = new double[]{s.player.x, s.player.y, s.player.z, s.player.yaw, s.player.pitch};
+                s.player.setPos(a.x(), a.y(), a.z());
+                s.player.yaw = a.yaw(); s.player.pitch = 0;
+            }
+        }
         recordingActor = a;
         recCopiedBlocks = take.blocks.size();
         recCast.clear();
@@ -852,6 +1146,20 @@ public final class NpcManager {
     }
 
     private int recStart;
+    /** Where the player stood before an "as the NPC" take ({x, y, z, yaw, pitch}), or null. */
+    private double[] recReturn;
+
+    /** Puts the player back where they stood before an "as the NPC" take. */
+    private void returnPlayer() {
+        double[] r = recReturn;
+        recReturn = null;
+        if (r == null || s.vehicles != null && s.vehicles.riding()) return;
+        s.player.setPos(r[0], r[1], r[2]);
+        s.player.yaw = (float) r[3]; s.player.pitch = (float) r[4];
+    }
+
+    /** The skin the player wears while recording "as the NPC" (null = their own). */
+    public String actingSkin() { return recordingActor != null && recordAsNpc ? recordingActor.skin : null; }
 
     private void beginTake() {
         takeStarted = true;
@@ -868,10 +1176,13 @@ public final class NpcManager {
         if (!takeStarted || take.length() < 2) {
             take = null;
             finishRecordingCast(a);
+            endRecSnapshot(false);
             Track t = a.track(recScene);
             if (t != null && t.takes.isEmpty()) a.removeTrack(recScene);
+            returnPlayer();
             return a;
         }
+        take.clampTicks();
         String file = takeFile(a, recScene);
         try { take.save(dir.resolve("recordings").resolve(file)); } catch (IOException e) { s.chat("§cCould not save the take: " + e.getMessage()); }
         recTake.file = file;
@@ -883,8 +1194,18 @@ public final class NpcManager {
         take = null;
         recTake = null;
         finishRecordingCast(a);
+        endRecSnapshot(restoresWorld(recScene));
+        returnPlayer();
         save();
         return a;
+    }
+
+    /** The take is over: the world before it comes back (restore on), or its changes are kept for "Restore world". */
+    private void endRecSnapshot(boolean restore) {
+        WorldSnapshot w = recSnap;
+        recSnap = null;
+        if (w == null) return;
+        if (restore) apply(w, recScene); else keepForUndo(recScene, w);
     }
 
     private String takeFile(Actor a, String scene) {
@@ -921,10 +1242,15 @@ public final class NpcManager {
         Recording r = take;
         take = null;
         recTake = null;
-        if (r != null) for (int i = r.blocks.size() - 1; i >= recCopiedBlocks; i--) {
+        // the world as it was before the take (also what the scene's other actors changed while it ran)
+        WorldSnapshot w = recSnap;
+        recSnap = null;
+        if (w != null) apply(w, recScene);
+        else if (r != null) for (int i = r.blocks.size() - 1; i >= recCopiedBlocks; i--) {
             var b = r.blocks.get(i);
             s.world.setBlock(b.x(), b.y(), b.z(), b.before());
         }
+        returnPlayer();
         boolean removed = false;
         if (a != null) {
             finishRecordingCast(a);
@@ -951,8 +1277,49 @@ public final class NpcManager {
         save();
     }
 
+    /** Position (posKey) and entity count just before setBlock replaced a block: items it spilled are the entities added since. */
+    private long changingPos = Long.MIN_VALUE;
+    private int changingEntities;
+
+    /** A block is about to be replaced: snapshots keep it with its contents (a chest broken during a scene comes back full). */
+    private void beforeChange(int x, int y, int z) {
+        changingPos = Long.MIN_VALUE;
+        if (applying || randomTicking) return;
+        boolean any = false;
+        if (!playerActing) for (SceneRun r : runs) { remember(r.snap, x, y, z); any = true; }
+        if (recSnap != null) { remember(recSnap, x, y, z); any = true; }
+        if (any) { changingPos = posKey(x, y, z); changingEntities = s.world.entities.size(); }
+    }
+
     private void blockChanged(int x, int y, int z, int before, int after) {
-        if (take != null && takeStarted && playerActing && recordBlocks) take.blocks.add(new Recording.BlockAction(Math.max(0, take.length() - 1), x, y, z, before, after));
+        if (applying || randomTicking) return;
+        // a container spilled its items: restoring the snapshot puts them back inside, so those on the ground go away then
+        if (changingPos == posKey(x, y, z)) {
+            List<derpcraft.entity.Entity> es = s.world.entities;
+            for (int i = changingEntities; i < es.size(); i++) if (es.get(i) instanceof derpcraft.entity.ItemEntity ie) {
+                if (!playerActing) for (SceneRun r : runs) r.snap.items.add(ie);
+                if (recSnap != null) recSnap.items.add(ie);
+            }
+        }
+        changingPos = Long.MIN_VALUE;
+        // remember the world before scenes / takes change it (for restoring); the player's own building while a scene plays is theirs
+        if (!playerActing || recSnap != null) {
+            for (SceneRun r : runs) if (!playerActing) rememberState(r.snap, x, y, z, before);
+            if (recSnap != null) rememberState(recSnap, x, y, z, before);
+        }
+        if (take == null || !takeStarted || !recordBlocks) return;
+        boolean byPlayer = playerActing;
+        // what the player set off (explosions, fire, water, falling sand, doors and redstone...) near them, not what NPCs did
+        if (!byPlayer && recordWorld && !npcTicking) {
+            double dx = x + 0.5 - s.player.x, dz = z + 0.5 - s.player.z;
+            byPlayer = dx * dx + dz * dz < 48 * 48;
+        }
+        if (byPlayer) take.blocks.add(new Recording.BlockAction(take.length(), x, y, z, before, after));
+    }
+
+    /** Like remember(), when the block has changed already (its block entity is gone: only the state). */
+    private static void rememberState(WorldSnapshot snap, int x, int y, int z, int before) {
+        snap.blocks.putIfAbsent(posKey(x, y, z), new Snap(x, y, z, before, null));
     }
 
     /** Replayed gun shots hurt (on: actors in a scene can shoot each other dead; off: they only show the hits). */
@@ -962,18 +1329,23 @@ public final class NpcManager {
     public void recordItem(int kind, String item, int count, double dx, double dy, double dz) {
         if (take == null || !takeStarted) return;
         var p = s.player;
-        take.items.add(new Recording.ItemAction(Math.max(0, take.length() - 1), kind, item, count, p.x, p.y, p.z, dx, dy, dz));
+        take.items.add(new Recording.ItemAction(take.length(), kind, item, count, p.x, p.y, p.z, dx, dy, dz));
     }
 
     /** Chat from the player: becomes a line while recording (only if chat lines are on). Returns the text to show, or null for normal chat. */
     public String chatLine(String text) {
         if (take == null || !takeStarted || !recordChat) return null;
-        take.chat.add(new Recording.ChatAction(Math.max(0, take.length() - 1), text));
+        take.chat.add(new Recording.ChatAction(take.length(), text));
         return "<" + recordingActor.name + "> " + text;
     }
 
     // ================================================================ ticking
     public void tick() {
+        npcTicking = true;
+        try { tickInner(); } finally { npcTicking = false; }
+    }
+
+    private void tickInner() {
         tickCount++;
         World w = s.world;
         if (recordingActor != null) {
@@ -992,6 +1364,9 @@ public final class NpcManager {
                 if (p.onGround) flags |= Recording.FLAG_GROUND;
                 if (s.swingStartedThisTick()) flags |= Recording.FLAG_SWING;
                 if (s.backReaching()) flags |= Recording.FLAG_BACK_REACH;
+                if (s.stats.hurtTime >= 9) flags |= Recording.FLAG_HURT;
+                f.stance = p.pose.ordinal();
+                f.fists = s.fists.guard(); f.punchL = s.fists.punchLeft(); f.punchR = s.fists.punchRight();
                 float[] vs = s.vehicles == null ? null : s.vehicles.recordState();
                 if (vs != null) {
                     flags |= Recording.FLAG_SIT;
@@ -1009,7 +1384,7 @@ public final class NpcManager {
                 for (Actor o : recCast) {
                     if (o.mode != Actor.Mode.PLAYING) continue;
                     if (recTick >= o.sceneTake.end()) o.toAI();
-                    else playActor(o, o.sceneTrack, o.sceneTake, recTick);
+                    else playActor(o, o.sceneTrack, o.sceneTake, recTick, recSnap);
                 }
                 recTick++;
                 if (take.length() >= 20 * 60 * 20) { s.chat("§eRecording stopped: 20 minutes limit"); stopRecording(); }
@@ -1019,12 +1394,12 @@ public final class NpcManager {
             SceneRun run = it.next();
             tickRun(run);
             if (!run.gathering && run.tick >= run.length) {
-                for (Actor a : run.cast) if (a.mode != Actor.Mode.AI) a.toAI();
                 it.remove();
+                finishRun(run);
                 for (Events.SceneHandler h : ModContext.SCENE_END) {
                     try { h.onSceneEnd(s); } catch (Throwable t) { t.printStackTrace(); }
                 }
-                if (loopScene) { String name = run.name; s.schedule(1, () -> playScene(name)); }
+                if (loopScene) { String name = run.name; Collection<Integer> only = run.only; s.schedule(1, () -> playScene(name, only)); }
             }
         }
         chooseTargets();
@@ -1046,14 +1421,14 @@ public final class NpcManager {
         for (int i = 0; i < actors.size(); i++) {
             Actor a = actors.get(i);
             if (a.mode != Actor.Mode.AI || a.dead()) continue;
-            push(a, p.x, p.y, p.z, 0.7);
+            if (a.pushable) push(a, p.x, p.y, p.z, 0.7);
             for (int j = i + 1; j < actors.size(); j++) {
                 Actor b = actors.get(j);
                 if (b.mode != Actor.Mode.AI || b.dead()) continue;
                 double dx = a.x() - b.x(), dz = a.z() - b.z();
                 if (Math.abs(a.y() - b.y()) > 1.5 || dx * dx + dz * dz > 0.36) continue;
-                push(a, b.x(), b.y(), b.z(), 0.6);
-                push(b, a.x(), a.y(), a.z(), 0.6);
+                if (a.pushable) push(a, b.x(), b.y(), b.z(), 0.6);
+                if (b.pushable) push(b, a.x(), a.y(), a.z(), 0.6);
             }
         }
     }
@@ -1113,12 +1488,19 @@ public final class NpcManager {
         p.setProperty("walkToMarks", String.valueOf(walkToMarks));
         p.setProperty("attackCreative", String.valueOf(attackCreative));
         p.setProperty("countdown", String.valueOf(countdownSeconds));
+        p.setProperty("recordWorld", String.valueOf(recordWorld));
+        p.setProperty("recordAsNpc", String.valueOf(recordAsNpc));
         p.setProperty("currentScene", currentScene);
         StringBuilder rel = new StringBuilder();
         for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) rel.append(attacks[i][j] ? '1' : '0');
         p.setProperty("attacks", rel.toString());
         int gi = 0;
-        for (String g : groups()) { p.setProperty("group" + gi + ".name", g); p.setProperty("group" + gi + ".on", String.valueOf(groupEnabled(g))); gi++; }
+        for (String g : groups()) {
+            p.setProperty("group" + gi + ".name", g);
+            p.setProperty("group" + gi + ".on", String.valueOf(groupEnabled(g)));
+            p.setProperty("group" + gi + ".restore", String.valueOf(restoresWorld(g)));
+            gi++;
+        }
         StringBuilder ids = new StringBuilder();
         for (Actor a : all()) {
             String k = "a" + a.id + ".";
@@ -1152,6 +1534,7 @@ public final class NpcManager {
             p.setProperty(k + "seat", a.seat == null ? "" : a.seat[0] + "," + a.seat[1] + "," + a.seat[2]);
             p.setProperty(k + "watch", a.watchId + "|" + a.rideId + "|" + a.rideCreature);
             p.setProperty(k + "vehicle", a.vehicleId + "|" + a.vehicleSeat);
+            p.setProperty(k + "stats", a.statsLine());
             int t = 0;
             for (var e : a.tracks.entrySet()) {
                 Track tr = e.getValue();
@@ -1204,9 +1587,14 @@ public final class NpcManager {
         walkToMarks = Boolean.parseBoolean(p.getProperty("walkToMarks", "true"));
         attackCreative = Boolean.parseBoolean(p.getProperty("attackCreative", "false"));
         countdownSeconds = (int) num(p.getProperty("countdown"), 3);
+        recordWorld = Boolean.parseBoolean(p.getProperty("recordWorld", "true"));
+        recordAsNpc = Boolean.parseBoolean(p.getProperty("recordAsNpc", "false"));
         currentScene = p.getProperty("currentScene", "main");
-        for (int gi = 0; p.getProperty("group" + gi + ".name") != null; gi++)
-            groups.put(p.getProperty("group" + gi + ".name"), Boolean.parseBoolean(p.getProperty("group" + gi + ".on", "true")));
+        for (int gi = 0; p.getProperty("group" + gi + ".name") != null; gi++) {
+            String g = p.getProperty("group" + gi + ".name");
+            groups.put(g, Boolean.parseBoolean(p.getProperty("group" + gi + ".on", "true")));
+            if (Boolean.parseBoolean(p.getProperty("group" + gi + ".restore", "false"))) restoreAfter.add(g.toLowerCase(Locale.ROOT));
+        }
         for (int i = 0; p.getProperty("shot" + i) != null; i++) {
             String[] v = p.getProperty("shot" + i).split("\\|");
             if (v.length >= 7) shots.add(new Shot(v[0], num(v[1], 0), num(v[2], 0), num(v[3], 0), (float) num(v[4], 0), (float) num(v[5], 0), (float) num(v[6], 0)));
@@ -1295,6 +1683,7 @@ public final class NpcManager {
             String[] vh = p.getProperty(k + "vehicle", "-1|-1").split("\\|");
             a.vehicleId = (int) num(vh[0], -1);
             a.vehicleSeat = vh.length > 1 ? (int) num(vh[1], -1) : -1;
+            a.statsFrom(p.getProperty(k + "stats"));
             // group (worlds before 1.8: the scene it has a take for, else the hub's scene)
             String grp = p.getProperty(k + "group");
             if (grp == null || grp.isBlank()) grp = a.tracks.isEmpty() ? currentScene : a.tracks.keySet().iterator().next();

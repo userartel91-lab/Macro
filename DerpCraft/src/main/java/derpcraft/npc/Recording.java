@@ -14,6 +14,8 @@ public final class Recording {
     public static final int FLAG_SNEAK = 1, FLAG_SWING = 2, FLAG_SPRINT = 4, FLAG_FLYING = 8, FLAG_GROUND = 16, FLAG_SIT = 32, FLAG_WAVE = 64;
     /** The arm reaches over the shoulder for the gun on the back (Left Alt + F). */
     public static final int FLAG_BACK_REACH = 128;
+    /** (version 7) the player was hurt this tick (the actor flashes red on replay). */
+    public static final int FLAG_HURT = 256;
 
     public static final class Frame {
         public double x, y, z;
@@ -36,17 +38,25 @@ public final class Recording {
         /** (version 6) in a vehicle: the roll-over angle, how much the tyres slide, bit 0 = lights on, bit 1 = blown up. */
         public float vflip, vslip;
         public int vflags;
+        /** (version 7) the body posture ({@link derpcraft.game.Stance} ordinal: stand, sneak, deep crouch, sit, crawl, lie). */
+        public int stance;
+        /** (version 7) fist fighting (Left Alt + Q): the guard and both punches, 0..1. */
+        public float fists, punchL, punchR;
 
         public Frame copy() {
             Frame f = new Frame();
             f.x = x; f.y = y; f.z = z; f.yaw = yaw; f.pitch = pitch; f.flags = flags; f.held = held; f.back = back; f.pouches = pouches; f.pose = pose; f.emotion = emotion;
             f.vehicle = vehicle; f.seat = seat; f.vyaw = vyaw; f.vpitch = vpitch; f.vroll = vroll; f.steer = steer; f.doors = doors;
             f.vflip = vflip; f.vslip = vslip; f.vflags = vflags;
+            f.stance = stance; f.fists = fists; f.punchL = punchL; f.punchR = punchR;
             return f;
         }
     }
 
-    /** Something done with items: 0 picked up, 1 dropped, 2 shot / threw a projectile (item = projectile id, dx..dz direction, speed in count/100). */
+    /**
+     * Something done with items: 0 picked up, 1 dropped, 2 shot / threw a projectile (item = projectile id, dx..dz direction, speed in count/100),
+     * 3 gun shot, 4 reload, 5 gun melee, 6 a hit on a creature or an NPC (item = "npc:ID" or "mob:TYPE", count = damage x 10, x..z = where the target was).
+     */
     public record ItemAction(int tick, int kind, String item, int count, double x, double y, double z, double dx, double dy, double dz) {}
 
     /** A block change: tick, position, state before and after. */
@@ -70,7 +80,7 @@ public final class Recording {
     }
 
     // ------------------------------------------------------------------ files
-    private static final int MAGIC = 0x44435243, VERSION = 6;  // "DCRC"
+    private static final int MAGIC = 0x44435243, VERSION = 7;  // "DCRC"
 
     public void save(Path file) throws IOException {
         Files.createDirectories(file.getParent());
@@ -108,6 +118,8 @@ public final class Recording {
                 out.writeBoolean(samePouches);
                 if (!samePouches) out.writeUTF(f.pouches);
                 lastPouches = f.pouches;
+                out.writeByte(f.stance);
+                out.writeByte(unit(f.fists)); out.writeByte(unit(f.punchL)); out.writeByte(unit(f.punchR));
             }
             out.writeInt(blocks.size());
             for (BlockAction b : blocks) { out.writeInt(b.tick); out.writeInt(b.x); out.writeInt(b.y); out.writeInt(b.z); out.writeInt(b.before); out.writeInt(b.after); }
@@ -120,6 +132,16 @@ public final class Recording {
             }
         }
         Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    private static int unit(float v) { return Math.round(Math.max(0, Math.min(1, v)) * 255); }
+
+    /** Actions recorded after the last frame (the take stopped in the same tick) move onto the last frame, so they still play. */
+    public void clampTicks() {
+        int last = Math.max(0, frames.size() - 1);
+        blocks.replaceAll(b -> b.tick() > last ? new BlockAction(last, b.x(), b.y(), b.z(), b.before(), b.after()) : b);
+        chat.replaceAll(c -> c.tick() > last ? new ChatAction(last, c.text()) : c);
+        items.replaceAll(a -> a.tick() > last ? new ItemAction(last, a.kind(), a.item(), a.count(), a.x(), a.y(), a.z(), a.dx(), a.dy(), a.dz()) : a);
     }
 
     public static Recording load(Path file) throws IOException {
@@ -157,6 +179,10 @@ public final class Recording {
                 if (version >= 5) {
                     if (!in.readBoolean()) lastPouches = in.readUTF();
                     f.pouches = lastPouches;
+                }
+                if (version >= 7) {
+                    f.stance = in.readByte();
+                    f.fists = (in.readByte() & 255) / 255f; f.punchL = (in.readByte() & 255) / 255f; f.punchR = (in.readByte() & 255) / 255f;
                 }
                 r.frames.add(f);
             }

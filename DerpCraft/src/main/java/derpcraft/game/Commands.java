@@ -112,6 +112,16 @@ public final class Commands {
                 }
                 case "play" -> { String sc = rest.isEmpty() ? n.currentScene : rest; g.chat(n.playScene(sc) ? "Playing scene " + sc : "Nothing recorded for scene " + sc); }
                 case "reset" -> { String sc = rest.isEmpty() ? n.currentScene : rest; n.resetScene(sc); g.chat("Scene " + sc + " back at the start"); }
+                case "restore" -> { String sc = rest.isEmpty() ? n.currentScene : rest; int k = n.restoreWorld(sc); g.chat(k > 0 ? k + " block(s) of scene " + sc + " back as before it" : "Nothing to restore in scene " + sc); }
+                case "world" -> {
+                    // /npc world restore|keep [scene]: what a scene leaves in the world after it played
+                    String[] wv = rest.split(" ", 2);
+                    String sc = wv.length > 1 && !wv[1].isBlank() ? wv[1].trim() : n.currentScene;
+                    if (wv[0].equalsIgnoreCase("restore")) n.setRestoresWorld(sc, true);
+                    else if (wv[0].equalsIgnoreCase("keep")) n.setRestoresWorld(sc, false);
+                    else throw new IllegalArgumentException("/npc world restore|keep [scene]");
+                    g.chat("Scene " + sc + ": the world is " + (n.restoresWorld(sc) ? "restored after each play" : "kept as the actors left it (/npc restore puts it back)"));
+                }
                 case "scene" -> { if (!rest.isEmpty()) { n.currentScene = rest; n.save(); } g.chat("Current scene: " + n.currentScene + "   (scenes: " + String.join(", ", n.sceneNames()) + ")"); }
                 case "group" -> {
                     if (!rest.isEmpty()) {
@@ -134,7 +144,7 @@ public final class Commands {
                 }
                 case "revive" -> { var ac = need(n, rest); ac.revive(); g.chat(ac.name + " is back on their feet"); }
                 case "hub" -> s.game.setScreen(new derpcraft.gui.NpcHub(s.game, s, null));
-                default -> throw new IllegalArgumentException("Usage: /npc spawn|list|remove|skin|faction|record|stop|play|reset|scene|group|groups|on|off|revive|hub");
+                default -> throw new IllegalArgumentException("Usage: /npc spawn|list|remove|skin|faction|record|stop|play|reset|restore|world|scene|group|groups|on|off|revive|hub");
             }
         });
         derpcraft.vehicle.Vehicles.registerCommand(c);
