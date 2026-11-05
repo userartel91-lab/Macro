@@ -87,6 +87,8 @@ public final class Settings {
     public boolean bulletBlocks = true;
     /** Blood from hits, shots and falls (particles and splats on blocks). */
     public boolean blood = true;
+    /** How much blood (x of the full amount; Options -> Gameplay). Small by default: a hit leaves a few drops, not a pool. */
+    public float bloodAmount = 0.25f;
     /** Third person (F5) camera distance in blocks. */
     public float thirdPersonDistance = 4;
     /** Chat messages pop up over the game (off: they are only seen in the chat window, T). */
@@ -159,6 +161,7 @@ public final class Settings {
         fireSpread = b(p, "fireSpread", fireSpread);
         bulletBlocks = b(p, "bulletBlocks", bulletBlocks);
         blood = b(p, "blood", blood);
+        bloodAmount = Math.max(0, Math.min(2, f(p, "bloodAmount", bloodAmount)));
         thirdPersonDistance = f(p, "thirdPersonDistance", thirdPersonDistance);
         chatMessages = b(p, "chatMessages", chatMessages);
         recPauseInMenus = b(p, "recPauseInMenus", recPauseInMenus);
@@ -253,6 +256,7 @@ public final class Settings {
         p.setProperty("fireSpread", "" + fireSpread);
         p.setProperty("bulletBlocks", "" + bulletBlocks);
         p.setProperty("blood", "" + blood);
+        p.setProperty("bloodAmount", "" + bloodAmount);
         p.setProperty("thirdPersonDistance", "" + thirdPersonDistance);
         p.setProperty("chatMessages", "" + chatMessages);
         p.setProperty("recPauseInMenus", "" + recPauseInMenus);

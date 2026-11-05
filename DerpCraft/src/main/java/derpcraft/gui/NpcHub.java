@@ -355,6 +355,12 @@ public final class NpcHub extends Screen {
         }
         y += 3 * 18 + 6;
         add(new Widget.Button(x, y, w, 16, () -> "Attack creative player: " + onOff(n.attackCreative), () -> { n.attackCreative = !n.attackCreative; n.save(); }));
+        y += 18;
+        add(new Widget.Button(x, y, w, 16, () -> "You can hurt Friendly: " + onOff(n.playerHurtsFriendly), () -> {
+            n.playerHurtsFriendly = !n.playerHurtsFriendly;
+            n.save();
+            flash(n.playerHurtsFriendly ? "Your hits and shots hurt and kill Friendly NPCs too" : "Friendly NPCs ignore your hits");
+        }));
     }
 
     // ================================================================ NPC row
@@ -495,7 +501,7 @@ public final class NpcHub extends Screen {
         y += 18;
         behaviourRow(a, x, y, w);
         y += 24;
-        slider(x, y, w, "Attack range", 2, 32, 1, () -> a.aggroRange, v -> a.aggroRange = (float) v, v -> Math.round(v) + " blocks", 10);
+        slider(x, y, w, "Attack range (sees enemies)", 2, 64, 1, () -> a.aggroRange, v -> a.aggroRange = (float) v, v -> Math.round(v) + " blocks", 10);
         y += 18;
         add(new Widget.Button(x, y, hw, 16, () -> "Hit: " + a.onHit.label.toLowerCase(Locale.ROOT), () -> { a.onHit = next(a.onHit); n.save(); }));
         add(new Widget.Button(x + hw + 2, y, hw, 16, () -> a.guard.label, () -> { a.guard = next(a.guard); n.save(); }));
@@ -512,6 +518,18 @@ public final class NpcHub extends Screen {
         y += 18;
         slider(x, y, hw, "Look", 2, 32, 1, () -> a.lookRange, v -> a.lookRange = (float) v, v -> Math.round(v) + " bl", 10);
         slider(x + hw + 2, y, hw, "Wander", 2, 32, 1, () -> a.wanderRadius, v -> a.wanderRadius = (float) v, v -> Math.round(v) + " bl", 8);
+        y += 18;
+        add(new Widget.Button(x, y, hw, 16, () -> "Help allies: " + onOff(a.helpAllies), () -> {
+            a.helpAllies = !a.helpAllies;
+            n.save();
+            flash(a.helpAllies ? a.name + " attacks whoever attacks a " + a.faction.label + " NPC within its attack range" : a.name + " minds its own fights");
+        }));
+        Widget.Button as = add(new Widget.Button(x + hw + 2, y, hw, 16, () -> (a.behavior == Actor.Behavior.FOLLOW ? "" : "§7") + "Assist me: " + onOff(a.assistPlayer), () -> {
+            a.assistPlayer = !a.assistPlayer;
+            n.save();
+            flash(a.assistPlayer ? "Following you, " + a.name + " attacks and shoots whatever you attack (any faction)" : a.name + " does not join your fights");
+        }));
+        as.active = true;
     }
 
     /** Stats page: speed, health, damage, how the body reacts. */
@@ -533,17 +551,23 @@ public final class NpcHub extends Screen {
         add(new Widget.Button(x, y, hw, 16, () -> "Pushable: " + onOff(a.pushable), () -> { a.pushable = !a.pushable; n.save(); }));
         add(new Widget.Button(x + hw + 2, y, hw, 16, () -> "Fall damage: " + onOff(a.takesFallDamage), () -> { a.takesFallDamage = !a.takesFallDamage; n.save(); }));
         y += 18;
-        add(new Widget.Button(x, y, hw, 16, () -> a.respawn ? "Death: §arespawn" : "Death: §7stays", () -> {
+        add(new Widget.Button(x, y, hw, 16, () -> a.respawn ? "Death: §arespawns" : "Death: §7stays", () -> {
             a.respawn = !a.respawn;
             n.save();
             flash(a.respawn ? "After death " + a.name + " stands up at home after 5 s" : "After death " + a.name + " stays down until Revive (NPC page)");
         }));
         add(new Widget.Button(x + hw + 2, y, hw, 16, "Reset stats", () -> {
+            a.respawnSeconds = 5;
             a.speed = 1; a.maxHealth = 20; a.health = Math.min(a.health, 20); a.damage = 0; a.attackDelay = 12; a.regen = 0;
             a.invulnerable = false; a.knockback = true; a.pushable = true; a.takesFallDamage = true; a.respawn = true;
             n.save();
             flash(a.name + ": default stats");
         }));
+        y += 18;
+        Widget.Slider rs = add(new Widget.Slider(x, y, w, 16, "Respawn after", 1, 300, 1, () -> a.respawnSeconds, v -> { a.respawnSeconds = (float) v; n.save(); },
+                v -> v >= 60 ? String.format(Locale.ROOT, "%d:%02d", Math.round(v) / 60, Math.round(v) % 60) : Math.round(v) + " s"));
+        rs.defaultValue = 5;
+        rs.active = true;
     }
 
     /** Takes page: record, pick the take, timeline, and what the scene does to the world. */
@@ -833,8 +857,9 @@ public final class NpcHub extends Screen {
                             "In scene: OFF = skips the scene,", "  keeps living by its AI.", "Duplicate: same look, AI, stats."};
                     case P_LOOK -> new String[]{"Hands / hat take what is in yours.", "Pose Edit: the pose editor.", "Name color: auto = red when", "  aggressive, white otherwise."};
                     case P_AI -> new String[]{a.name + ": " + a.faction.label,
-                            a.faction == Actor.Faction.AGGRESSIVE ? "Attacks the player within range" : a.faction == Actor.Faction.NEUTRAL ? "Only reacts when hit" : "Can't be hurt by the player",
-                            "Look: how near you must be for", "  the head to turn to you.", "Wander: how far it roams."};
+                            a.faction == Actor.Faction.AGGRESSIVE ? "Attacks the player within range" : a.faction == Actor.Faction.NEUTRAL ? "Only reacts when hit" : n.playerHurtsFriendly ? "Friendly (you can still hurt it)" : "Can't be hurt by the player",
+                            "Attack range: enemies it can see", "  this close are attacked.", "Help allies: attacks whoever attacks", "  an NPC of its faction nearby.",
+                            "Assist me (Follow): attacks what", "  you attack, any faction."};
                     default -> new String[]{String.format(Locale.ROOT, "Health %.0f / %.0f%s", a.health, a.maxHealth, a.dead() ? " (dead)" : ""),
                             "Speed 1 = walks like you.", "Dmg 0 = from the item in its hand.", "Regen heals after 5 s without hits.",
                             "Immortal: nothing hurts it.", "Pushable: others push it aside.", "Death: respawn at home in 5 s,", "  or stay down until Revive."};
@@ -879,7 +904,7 @@ public final class NpcHub extends Screen {
             }
             for (int i = 0; i < 3; i++) g.text("§" + factionColor(f[i]) + f[i].label, x, y + 16 + i * 18, 0xFFFFFF, false);
             String[] help = {"Aggressive: attacks the player", "  within its range (AI page).", "Neutral: hits back or runs", "  away after being hit.",
-                    "Friendly: the player can't hurt", "  it; it ignores your hits.", "Rows: who attacks whom.", "Guards (AI page) defend you", "  or flee when you're attacked."};
+                    "Friendly: the player can't hurt", "  it (unless 'You can hurt Friendly').", "Rows: who attacks whom.", "Guards (AI page) defend you", "  or flee when you're attacked."};
             helpBox(g, help, 24, 0xD0D0D0);
         }
         if (statusTicks > 0) {

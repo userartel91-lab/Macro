@@ -102,6 +102,12 @@ public final class Actor {
     public boolean pushable = true;
     /** Falls of more than 3 blocks hurt. */
     public boolean takesFallDamage = true;
+    /** Seconds after death before it stands up at home again (with 'respawn' on). */
+    public float respawnSeconds = 5;
+    /** Helps its faction: attacks whoever attacks an NPC of its faction within its attack range. */
+    public boolean helpAllies;
+    /** Following the player: attacks whatever the player attacks (NPCs of any faction, creatures). */
+    public boolean assistPlayer;
     /** Name tag colour: 0 = auto (red when aggressive), then {@link #NAME_COLORS}. */
     public int nameColor;
     public static final String[] NAME_COLOR_NAMES = {"Auto", "White", "Yellow", "Green", "Aqua", "Gold", "Pink", "Gray"};
@@ -122,12 +128,13 @@ public final class Actor {
         patrolLoop = a.patrolLoop; patrolWait = a.patrolWait; seat = a.seat == null ? null : a.seat.clone();
         speed = a.speed; lookRange = a.lookRange; wanderRadius = a.wanderRadius; attackDelay = a.attackDelay; regen = a.regen;
         invulnerable = a.invulnerable; knockback = a.knockback; pushable = a.pushable; takesFallDamage = a.takesFallDamage; nameColor = a.nameColor;
+        respawnSeconds = a.respawnSeconds; helpAllies = a.helpAllies; assistPlayer = a.assistPlayer;
     }
 
     /** The stats as one line for actors.txt. */
     String statsLine() {
         return speed + "," + lookRange + "," + wanderRadius + "," + attackDelay + "," + regen + "," + nameColor + ","
-                + invulnerable + "," + knockback + "," + pushable + "," + takesFallDamage + "," + waiting;
+                + invulnerable + "," + knockback + "," + pushable + "," + takesFallDamage + "," + waiting + "," + respawnSeconds + "," + helpAllies + "," + assistPlayer;
     }
 
     void statsFrom(String line) {
@@ -145,6 +152,11 @@ public final class Actor {
             pushable = Boolean.parseBoolean(v[8]);
             takesFallDamage = Boolean.parseBoolean(v[9]);
             waiting = v.length > 10 && Boolean.parseBoolean(v[10]);
+            if (v.length > 13) {
+                respawnSeconds = Math.max(0.5f, Float.parseFloat(v[11]));
+                helpAllies = Boolean.parseBoolean(v[12]);
+                assistPlayer = Boolean.parseBoolean(v[13]);
+            }
         } catch (RuntimeException ignored) {}       // older / damaged line: the rest keeps its defaults
     }
 
@@ -947,7 +959,7 @@ public final class Actor {
         double[] c = ragdoll.centre();
         body.x = c[0]; body.z = c[2]; body.y = ragdoll.bottom();
         body.mx = body.my = body.mz = 0;
-        if (respawn && ++respawnTimer > 100) {
+        if (respawn && ++respawnTimer > Math.max(10, respawnSeconds * 20)) {
             revive();
             place(homeX, homeY, homeZ, homeYaw);
         }
@@ -964,7 +976,7 @@ public final class Actor {
     public void hurt(NpcManager m, float amount, Actor attacker, boolean byPlayer, derpcraft.entity.Mob mob, String cause) {
         if (dead() || mode == Mode.ON_MARK || invulnerable || age < noHurtUntil) return;
         boolean playing = mode == Mode.PLAYING;           // an actor in a take: hurt and killed for real, but the take goes on while it lives
-        if (byPlayer && faction == Faction.FRIENDLY) return;     // friendly NPCs ignore the player's hits
+        if (byPlayer && faction == Faction.FRIENDLY && !m.playerHurtsFriendly) { m.playerAttacked(this); return; }   // no harm, but your helpers still go for it     // friendly NPCs ignore the player's hits (unless allowed on Teams)
         var ses = derpcraft.game.Session.current;
         if (ses != null && derpcraft.api.EventBus.has(derpcraft.api.Events.EntityDamage.class)) {
             var ev = derpcraft.api.EventBus.post(ses, new derpcraft.api.Events.EntityDamage(null, name, amount, byPlayer ? "player" : mob != null ? "mob" : attacker != null ? "npc" : "other",
@@ -992,6 +1004,7 @@ public final class Actor {
                 derpcraft.api.EventBus.post(ses, new derpcraft.api.Events.EntityDeath(null, name, byPlayer, new java.util.ArrayList<>(), 0));
             return;
         }
+        m.actorHurt(this, attacker, byPlayer, mob);          // allies of its faction / the player's helpers join in
         if (playing) return;                  // a take goes on: no reaction until it is over
         // reaction
         boolean flee = faction == Faction.FRIENDLY && guard != Guard.DEFEND || faction == Faction.NEUTRAL && onHit == OnHit.FLEE;

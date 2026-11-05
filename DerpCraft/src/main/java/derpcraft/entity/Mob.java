@@ -356,6 +356,7 @@ public final class Mob extends Entity implements Creature {
         health -= amount;
         hurtTime = 10;
         invulnerable = 10;
+        if (byPlayer && s != null && s.npcs != null) s.npcs.playerHitMob(this);     // followers that help you attack it too
         derpcraft.game.Blood.body(body.x, body.y, body.z, type.height, amount, cause);
         if (!cause.equals("fire") && !cause.equals("lava") && !cause.equals("fall")) {
             double kx = body.x - fromX, kz = body.z - fromZ, l = Math.sqrt(kx * kx + kz * kz);

@@ -1766,7 +1766,8 @@ public final class EntityRenderer {
         int layer = assets.blocks.layer("wool_colored_white");
         double dl = Math.sqrt(dx * dx + dy * dy + dz * dz);
         if (dl > 1e-6) { dx /= dl; dy /= dl; dz /= dl; }
-        int n = Math.max(3, Math.min(70, Math.round(damage * 3)));
+        // a few drops for a usual hit, more for a big one (the Blood amount in Options already scaled 'damage')
+        int n = Math.max(1, Math.min(30, Math.round(damage * 1.2f)));
         double speed = 0.06 + Math.min(0.25, damage * 0.012);
         for (int i = 0; i < n; i++) {
             Particle p = new Particle();
@@ -1779,7 +1780,7 @@ public final class EntityRenderer {
             p.r = c; p.g = c * 0.06f; p.b = c * 0.05f;
             p.blood = true;
         }
-        int mist = Math.min(8, Math.round(damage / 3));
+        int mist = Math.min(6, Math.round(damage / 4));
         for (int i = 0; i < mist; i++) {
             Particle p = new Particle();
             p.x = p.px = x; p.y = p.py = y; p.z = p.pz = z;
@@ -1821,14 +1822,14 @@ public final class EntityRenderer {
             Splat o = splats.get(i);
             if (o.face != face || o.bx != bx || o.by != by || o.bz != bz) continue;
             double ddx = o.x - x, ddy = o.y - y, ddz = o.z - z;
-            if (ddx * ddx + ddy * ddy + ddz * ddz < o.size * o.size * 0.5) { o.size = Math.min(0.55f, o.size + p.size * 0.5f); o.born = w.gameTime; return; }
+            if (ddx * ddx + ddy * ddy + ddz * ddz < o.size * o.size * 0.5) { o.size = Math.min(0.45f, o.size + p.size * 0.3f); o.born = w.gameTime; return; }
         }
         Splat o = new Splat();
         o.bx = bx; o.by = by; o.bz = bz; o.face = face;
         o.state = w.getState(bx, by, bz);
         o.x = x + Dir.DX[face] * 0.004; o.y = y + Dir.DY[face] * 0.004; o.z = z + Dir.DZ[face] * 0.004;
         // a hit wall gets a smaller splat than the ground
-        o.size = (face == Dir.UP ? 2.6f : 1.8f) * p.size + rnd.nextFloat() * 0.03f;
+        o.size = (face == Dir.UP ? 1.7f : 1.3f) * p.size + rnd.nextFloat() * 0.02f;
         o.turn = rnd.nextFloat() * (float) Math.PI * 2;
         o.dark = 0.8f + rnd.nextFloat() * 0.35f;
         o.born = w.gameTime;

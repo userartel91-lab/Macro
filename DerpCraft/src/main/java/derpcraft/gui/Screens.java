@@ -239,7 +239,10 @@ public final class Screens {
             add(new Widget.Button(x2, y, 150, 20, () -> "Fire Spread: " + (s.fireSpread ? "ON" : "OFF"), () -> s.fireSpread = !s.fireSpread));
             y += 24;
             add(new Widget.Button(x1, y, 150, 20, () -> "Bullets Break Blocks: " + (s.bulletBlocks ? "ON" : "OFF"), () -> s.bulletBlocks = !s.bulletBlocks));
-            add(new Widget.Button(x2, y, 150, 20, () -> "Blood: " + (s.blood ? "ON" : "OFF"), () -> s.blood = !s.blood));
+            // blood: off, or how much (a hit leaves a few drops at the default; 100 % = the old amount)
+            Widget.Slider bl = add(new Widget.Slider(x2, y, 150, "Blood", 0, 2, 0.05f, () -> s.blood ? s.bloodAmount : 0,
+                    v -> { s.bloodAmount = (float) v; s.blood = v > 0; }, v -> v <= 0 ? "OFF" : Math.round(v * 100) + "%"));
+            bl.defaultValue = 0.25;
             add(new Widget.Button(width / 2 - 100, height - 27, 200, 20, "Done", this::onClose));
         }
 

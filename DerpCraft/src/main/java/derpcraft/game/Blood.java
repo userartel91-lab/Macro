@@ -14,8 +14,8 @@ public final class Blood {
     /** Blood from a point, thrown along (dx, dy, dz) (any length; 0 = all around), as much as 'damage' asks for. */
     public static void spill(double x, double y, double z, double dx, double dy, double dz, float damage) {
         Session s = Session.current;
-        if (s == null || damage <= 0 || !s.game.settings.blood) return;
-        s.game.entities.blood(s.world, x, y, z, dx, dy, dz, damage);
+        if (s == null || damage <= 0 || !s.game.settings.blood || s.game.settings.bloodAmount <= 0) return;
+        s.game.entities.blood(s.world, x, y, z, dx, dy, dz, damage * s.game.settings.bloodAmount);
     }
 
     /** Damage of kind 'cause' to a body standing at (x, y, z), 'height' tall: it bleeds (falls from the feet, the rest from the chest). */

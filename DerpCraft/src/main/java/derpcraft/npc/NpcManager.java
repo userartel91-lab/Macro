@@ -39,6 +39,8 @@ public final class NpcManager {
     public boolean walkToMarks = true;
     /** Aggressive NPCs also attack a player in creative mode (for filming fights). */
     public boolean attackCreative;
+    /** The player can hurt and kill NPCs of the Friendly faction too (off: they ignore the player's hits). */
+    public boolean playerHurtsFriendly;
     public int countdownSeconds = 3;
     /**
      * A take also records what the world does around the player because of them (explosions, fire, water and lava
@@ -411,6 +413,51 @@ public final class NpcManager {
         b.onRemoved(w, x, y, z, st & 15);
     }
 
+    /** Whether an NPC can see a point from its eyes (no solid block in between). */
+    private boolean sees(Actor a, double x, double y, double z) { return canSee(a.x(), a.y() + 1.5 * a.scale, a.z(), x, y, z); }
+
+    /**
+     * An NPC was hurt. 'Help allies' NPCs of its faction that are within their attack range of it go for the attacker;
+     * when the player hit it, followers with 'Assist me' go for it (whatever its faction).
+     */
+    void actorHurt(Actor victim, Actor attacker, boolean byPlayer, derpcraft.entity.Mob mob) {
+        if (attacker == null && !byPlayer && mob == null) return;            // a fall, a car...
+        if (byPlayer) playerAttacked(victim);
+        for (Actor b : actors) {
+            if (b == victim || b == attacker || b.dead() || b.mode != Actor.Mode.AI) continue;
+            if (byPlayer && b.behavior == Actor.Behavior.FOLLOW && b.assistPlayer) continue;      // see playerAttacked
+            if (!b.helpAllies || b.faction != victim.faction) continue;
+            if (dist2(b, victim.x(), victim.z()) > b.aggroRange * b.aggroRange) continue;
+            if (!sees(b, victim.x(), victim.y() + 1, victim.z())) continue;
+            if (attacker != null) { if (attacker.faction == b.faction && attacker.helpAllies && b.targetActor == victim) continue; b.targetActor = attacker; b.targetPlayer = false; b.targetMob = null; }
+            else if (byPlayer) { if (!playerTargetable()) continue; b.targetPlayer = true; b.targetActor = null; b.targetMob = null; }
+            else { b.targetMob = mob; b.targetActor = null; b.targetPlayer = false; }
+            b.angerTicks = Math.max(b.angerTicks, 400);
+            b.fleeTicks = 0;
+        }
+    }
+
+    /** The player attacked an NPC (hurt or not): followers with 'Assist me' attack it too, whatever its faction. */
+    void playerAttacked(Actor victim) {
+        for (Actor b : actors) {
+            if (b == victim || b.dead() || b.mode != Actor.Mode.AI || b.behavior != Actor.Behavior.FOLLOW || !b.assistPlayer) continue;
+            if (dist2(b, s.player.x, s.player.z) > 40 * 40) continue;
+            b.targetActor = victim; b.targetPlayer = false; b.targetMob = null; b.angerTicks = 600; b.fleeTicks = 0;
+        }
+    }
+
+    /** The player hit a creature: followers with 'Assist me' attack it too. */
+    public void playerHitMob(derpcraft.entity.Mob mob) {
+        if (mob == null || !mob.alive()) return;
+        for (Actor b : actors) {
+            if (b.dead() || b.mode != Actor.Mode.AI || b.behavior != Actor.Behavior.FOLLOW || !b.assistPlayer) continue;
+            if (dist2(b, s.player.x, s.player.z) > 40 * 40) continue;
+            b.targetMob = mob; b.targetActor = null; b.targetPlayer = false; b.angerTicks = 600; b.fleeTicks = 0;
+        }
+    }
+
+    private static double dist2(Actor a, double x, double z) { double dx = a.x() - x, dz = a.z() - z; return dx * dx + dz * dz; }
+
     /** Orders an NPC to attack another NPC (or the player when target is null). */
     public void order(Actor a, Actor target) {
         a.targetActor = target;
@@ -449,7 +496,7 @@ public final class NpcManager {
             float range = a.aggroRange, r2 = range * range;
             if (a.faction == Actor.Faction.AGGRESSIVE && playerTargetable()) {
                 double dx = p.x - a.x(), dy = p.y - a.y(), dz = p.z - a.z();
-                if (dx * dx + dz * dz < r2 && Math.abs(dy) < 6) { a.targetPlayer = true; continue; }
+                if (dx * dx + dz * dz < r2 && Math.abs(dy) < 6 && sees(a, p.x, p.y + p.eyeHeight, p.z)) { a.targetPlayer = true; continue; }
             }
             boolean[] hates = attacks[a.faction.ordinal()];
             if (!hates[0] && !hates[1] && !hates[2]) continue;
@@ -458,7 +505,8 @@ public final class NpcManager {
             for (Actor b : actors) {
                 if (b == a || b.dead() || b.mode != Actor.Mode.AI || !hates[b.faction.ordinal()]) continue;
                 double dx = b.x() - a.x(), dz = b.z() - a.z(), d2 = dx * dx + dz * dz;
-                if (d2 < bd && Math.abs(b.y() - a.y()) < 6) { bd = d2; best = b; }
+                // an enemy within the attack range that it can see (not through walls)
+                if (d2 < bd && Math.abs(b.y() - a.y()) < 6 && sees(a, b.x(), b.y() + 1.5 * b.scale, b.z())) { bd = d2; best = b; }
             }
             if (best != null) { a.targetActor = best; a.angerTicks = Math.max(a.angerTicks, 200); }
         }
@@ -1592,6 +1640,7 @@ public final class NpcManager {
         p.setProperty("replayGunDamage", String.valueOf(replayGunDamage));
         p.setProperty("walkToMarks", String.valueOf(walkToMarks));
         p.setProperty("attackCreative", String.valueOf(attackCreative));
+        p.setProperty("playerHurtsFriendly", String.valueOf(playerHurtsFriendly));
         p.setProperty("countdown", String.valueOf(countdownSeconds));
         p.setProperty("recordWorld", String.valueOf(recordWorld));
         p.setProperty("recordAsNpc", String.valueOf(recordAsNpc));
@@ -1692,6 +1741,7 @@ public final class NpcManager {
         replayGunDamage = Boolean.parseBoolean(p.getProperty("replayGunDamage", "false"));
         walkToMarks = Boolean.parseBoolean(p.getProperty("walkToMarks", "true"));
         attackCreative = Boolean.parseBoolean(p.getProperty("attackCreative", "false"));
+        playerHurtsFriendly = Boolean.parseBoolean(p.getProperty("playerHurtsFriendly", "false"));
         countdownSeconds = (int) num(p.getProperty("countdown"), 3);
         recordWorld = Boolean.parseBoolean(p.getProperty("recordWorld", "true"));
         recordAsNpc = Boolean.parseBoolean(p.getProperty("recordAsNpc", "false"));
