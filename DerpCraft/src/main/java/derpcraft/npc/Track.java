@@ -44,6 +44,29 @@ public final class Track {
         /** Scene tick at which a recording tick happens. */
         public double sceneTick(double sourceTick) { return offset + (sourceTick - trimStart) / speed; }
 
+        /**
+         * The actions of a list (in recording tick order) that happen at a scene tick: those whose scene tick rounds down
+         * to it. Found by binary search instead of going through the whole take every tick.
+         */
+        public <T> void forEachAt(List<T> list, java.util.function.ToIntFunction<T> tickOf, int sceneTick, java.util.function.Consumer<T> out) {
+            if (list.isEmpty()) return;
+            double lo = trimStart + (sceneTick - offset) * (double) speed - 2;       // a little wider: the exact test below decides
+            int i = lowerBound(list, tickOf, (int) Math.floor(lo));
+            double hi = trimStart + (sceneTick + 1 - offset) * (double) speed + 2;
+            for (; i < list.size(); i++) {
+                T a = list.get(i);
+                int t = tickOf.applyAsInt(a);
+                if (t > hi) break;
+                if (inside(t) && (int) Math.floor(sceneTick(t)) == sceneTick) out.accept(a);
+            }
+        }
+
+        private static <T> int lowerBound(List<T> list, java.util.function.ToIntFunction<T> tickOf, int tick) {
+            int a = 0, b = list.size();
+            while (a < b) { int m = (a + b) >>> 1; if (tickOf.applyAsInt(list.get(m)) < tick) a = m + 1; else b = m; }
+            return a;
+        }
+
         /** True if an action at this recording tick is inside the trimmed part. */
         public boolean inside(int sourceTick) { return sourceTick >= trimStart && sourceTick < trimStart + used(); }
 
@@ -132,9 +155,11 @@ public final class Track {
 
     /** Pose keyframes as they apply at a scene tick: {from pose, to pose, blend 0..1}. */
     public Object[] poseAt(int tick) {
+        if (keys.isEmpty()) return null;
         PoseKey cur = null, prev = null;
-        List<PoseKey> sorted = new ArrayList<>(keys);
-        sorted.sort((a, b) -> Integer.compare(a.tick, b.tick));
+        // every actor asks every tick: no copy when the keys are in order already (they are, after sortKeys)
+        List<PoseKey> sorted = keys;
+        for (int i = 1; i < keys.size(); i++) if (keys.get(i - 1).tick > keys.get(i).tick) { sorted = new ArrayList<>(keys); sorted.sort((a, b) -> Integer.compare(a.tick, b.tick)); break; }
         for (PoseKey k : sorted) { if (k.tick > tick) break; prev = cur; cur = k; }
         if (cur == null) return null;
         float t = cur.blend <= 0 ? 1 : curve(cur.curve, (tick - cur.tick) / (float) cur.blend);

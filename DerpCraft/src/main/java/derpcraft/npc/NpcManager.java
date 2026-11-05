@@ -362,6 +362,7 @@ public final class NpcManager {
     }
 
     public void remove(Actor a) {
+        aiTakes.remove(a);
         for (SceneRun r : runs) r.cast.remove(a);
         actors.remove(a);
         hidden.remove(a);
@@ -599,7 +600,9 @@ public final class NpcManager {
 
     /** A play / take of a group is over: its changes stay and can be restored later with the button (snapshot kept and saved). */
     private void keepForUndo(String group, WorldSnapshot snap) {
-        if (snap == null || snap.isEmpty()) return;
+        if (snap == null) return;
+        snap.items.removeIf(ie -> ie.dead);            // picked up / gone: nothing to take away later (and no memory kept for them)
+        if (snap.isEmpty()) return;
         undo(group, true).absorb(snap);
         saveSnapshot(group);
     }
@@ -643,7 +646,13 @@ public final class NpcManager {
     }
 
     // ---------------------------------------------------------------- snapshot files (npc/undo/<group>.txt)
-    private Path snapshotFile(String group) { return dir.resolve("undo").resolve(group.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "_") + ".txt"); }
+    private Path snapshotFile(String group) {
+        String lc = group.toLowerCase(Locale.ROOT);
+        return dir.resolve("undo").resolve(lc.replaceAll("[^a-z0-9_-]", "_") + "-" + Integer.toHexString(lc.hashCode()) + ".txt");
+    }
+
+    /** The file name of 1.14_60..63 (two groups whose names differ only in symbols shared it). */
+    private Path legacySnapshotFile(String group) { return dir.resolve("undo").resolve(group.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "_") + ".txt"); }
 
     private void saveSnapshot(String group) {
         WorldSnapshot w = undo.get(group.toLowerCase(Locale.ROOT));
@@ -672,6 +681,7 @@ public final class NpcManager {
 
     private WorldSnapshot loadSnapshot(String group) {
         Path f = snapshotFile(group);
+        if (!Files.exists(f)) f = legacySnapshotFile(group);
         if (!Files.exists(f)) return null;
         WorldSnapshot w = new WorldSnapshot();
         try {
@@ -697,7 +707,7 @@ public final class NpcManager {
     }
 
     private void deleteSnapshotFile(String group) {
-        try { Files.deleteIfExists(snapshotFile(group)); } catch (IOException ignored) {}
+        try { Files.deleteIfExists(snapshotFile(group)); Files.deleteIfExists(legacySnapshotFile(group)); } catch (IOException ignored) {}
     }
 
     // ================================================================ scenes
@@ -966,13 +976,13 @@ public final class NpcManager {
         }
         a.playFrame(f, swing);
         if (f.vehicle >= 0 && s.vehicles != null) s.vehicles.replay(a, f.vehicle, f.seat, f.x, f.y, f.z, f.vyaw, f.vpitch, f.vroll, f.steer, f.doors, f.vflip, f.vslip, f.vflags, false);
-        for (var b : tk.rec.blocks) {
-            if (!tk.inside(b.tick()) || (int) Math.floor(tk.sceneTick(b.tick())) != tick) continue;
+        // the actions of this tick (binary search in the tick-sorted lists: long takes no longer cost a full pass every tick)
+        tk.forEachAt(tk.rec.blocks, Recording.BlockAction::tick, tick, b -> {
             int[] p = tk.transformBlock(b.x(), b.y(), b.z());
             setSceneBlock(snap, p[0], p[1], p[2], b.after());
-        }
-        for (var c : tk.rec.chat) if (tk.inside(c.tick()) && (int) Math.floor(tk.sceneTick(c.tick())) == tick && recordChat) s.chat("<" + a.name + "> " + c.text());
-        for (var it : tk.rec.items) if (tk.inside(it.tick()) && (int) Math.floor(tk.sceneTick(it.tick())) == tick) itemAction(a, tk, it, snap);
+        });
+        if (recordChat) tk.forEachAt(tk.rec.chat, Recording.ChatAction::tick, tick, c -> s.chat("<" + a.name + "> " + c.text()));
+        tk.forEachAt(tk.rec.items, Recording.ItemAction::tick, tick, it -> itemAction(a, tk, it, snap));
     }
 
     /** Replays a recorded pickup / drop / shot. */
@@ -1430,8 +1440,8 @@ public final class NpcManager {
         changingPos = Long.MIN_VALUE;
         if (applying || randomTicking) return;
         boolean any = false;
-        if (!playerActing) for (SceneRun r : runs) { remember(r.snap, x, y, z); any = true; }
-        if (recSnap != null) { remember(recSnap, x, y, z); any = true; }
+        if (!playerActing) for (SceneRun r : runs) if (nearRun(r, x, z)) { remember(r.snap, x, y, z); any = true; }
+        if (recSnap != null && nearRecording(x, z)) { remember(recSnap, x, y, z); any = true; }
         if (any) { changingPos = posKey(x, y, z); changingEntities = s.world.entities.size(); }
     }
 
@@ -1448,8 +1458,8 @@ public final class NpcManager {
         changingPos = Long.MIN_VALUE;
         // remember the world before scenes / takes change it (for restoring); the player's own building while a scene plays is theirs
         if (!playerActing || recSnap != null) {
-            for (SceneRun r : runs) if (!playerActing) rememberState(r.snap, x, y, z, before);
-            if (recSnap != null) rememberState(recSnap, x, y, z, before);
+            for (SceneRun r : runs) if (!playerActing && nearRun(r, x, z)) rememberState(r.snap, x, y, z, before);
+            if (recSnap != null && nearRecording(x, z)) rememberState(recSnap, x, y, z, before);
         }
         if (take == null || !takeStarted || !recordBlocks) return;
         if (aiActing != null) {            // a recorded AI NPC opened a door, broke a block...: its own take
@@ -1464,6 +1474,23 @@ public final class NpcManager {
             byPlayer = dx * dx + dz * dz < 48 * 48;
         }
         if (byPlayer) take.blocks.add(new Recording.BlockAction(take.length(), x, y, z, before, after));
+    }
+
+    /** How far from a scene's actors (or the recording player) a world change still counts as the scene's doing. */
+    private static final double SCENE_REACH = 64;
+
+    /** Whether a block change is near an actor of a running scene (water flowing or a farm far away is not the scene's). */
+    private boolean nearRun(SceneRun r, int x, int z) {
+        for (Actor a : r.cast) { double dx = a.x() - x - 0.5, dz = a.z() - z - 0.5; if (dx * dx + dz * dz < SCENE_REACH * SCENE_REACH) return true; }
+        return false;
+    }
+
+    /** Whether a block change is near the player recording (or the actors playing along). */
+    private boolean nearRecording(int x, int z) {
+        double dx = s.player.x - x - 0.5, dz = s.player.z - z - 0.5;
+        if (dx * dx + dz * dz < SCENE_REACH * SCENE_REACH) return true;
+        for (Actor a : recCast) { dx = a.x() - x - 0.5; dz = a.z() - z - 0.5; if (dx * dx + dz * dz < SCENE_REACH * SCENE_REACH) return true; }
+        return false;
     }
 
     /** Like remember(), when the block has changed already (its block entity is gone: only the state). */

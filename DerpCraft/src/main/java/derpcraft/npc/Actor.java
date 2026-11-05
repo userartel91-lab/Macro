@@ -115,7 +115,7 @@ public final class Actor {
 
     /** Copies every setting (look, AI, stats; not the takes, the place or the group) from another NPC. */
     public void copySettingsFrom(Actor a) {
-        skin = a.skin; behavior = a.behavior; pose = a.pose; held = a.held == null ? null : a.held.copy(1); showName = a.showName;
+        skin = a.skin; behavior = a.fileBehavior(); pose = a.pose; held = a.held == null ? null : a.held.copy(1); showName = a.showName;
         faction = a.faction; onHit = a.onHit; guard = a.guard; aggroRange = a.aggroRange; followStart = a.followStart; followStop = a.followStop;
         openDoors = a.openDoors; breakBlocks = a.breakBlocks; maxHealth = a.maxHealth; health = a.maxHealth; damage = a.damage; respawn = a.respawn;
         enabled = a.enabled; sceneEnabled = a.sceneEnabled;
@@ -124,8 +124,8 @@ public final class Actor {
         for (Attachment at : a.attachments) attachments.add(at.copy());
         for (int i = 0; i < 4; i++) armor[i] = a.armor[i] == null ? null : a.armor[i].copy(1);
         waypoints.clear();
-        for (double[] w : a.waypoints) waypoints.add(w.clone());
-        patrolLoop = a.patrolLoop; patrolWait = a.patrolWait; seat = a.seat == null ? null : a.seat.clone();
+        for (double[] w : a.fileWaypoints()) waypoints.add(w.clone());          // a Tab + 1 patrol is not copied: the real points
+        patrolLoop = a.filePatrolLoop(); patrolWait = a.filePatrolWait(); seat = a.seat == null ? null : a.seat.clone();
         speed = a.speed; lookRange = a.lookRange; wanderRadius = a.wanderRadius; attackDelay = a.attackDelay; regen = a.regen;
         invulnerable = a.invulnerable; knockback = a.knockback; pushable = a.pushable; takesFallDamage = a.takesFallDamage; nameColor = a.nameColor;
         respawnSeconds = a.respawnSeconds; helpAllies = a.helpAllies; assistPlayer = a.assistPlayer;
@@ -976,7 +976,8 @@ public final class Actor {
     public void hurt(NpcManager m, float amount, Actor attacker, boolean byPlayer, derpcraft.entity.Mob mob, String cause) {
         if (dead() || mode == Mode.ON_MARK || invulnerable || age < noHurtUntil) return;
         boolean playing = mode == Mode.PLAYING;           // an actor in a take: hurt and killed for real, but the take goes on while it lives
-        if (byPlayer && faction == Faction.FRIENDLY && !m.playerHurtsFriendly) { m.playerAttacked(this); return; }   // no harm, but your helpers still go for it     // friendly NPCs ignore the player's hits (unless allowed on Teams)
+        // Friendly NPCs ignore the player's hits (unless allowed on Teams); the player's helpers still go for it
+        if (byPlayer && faction == Faction.FRIENDLY && !m.playerHurtsFriendly) { m.playerAttacked(this); return; }
         var ses = derpcraft.game.Session.current;
         if (ses != null && derpcraft.api.EventBus.has(derpcraft.api.Events.EntityDamage.class)) {
             var ev = derpcraft.api.EventBus.post(ses, new derpcraft.api.Events.EntityDamage(null, name, amount, byPlayer ? "player" : mob != null ? "mob" : attacker != null ? "npc" : "other",
@@ -995,6 +996,7 @@ public final class Actor {
             body.mx += kx / kl * 0.4; body.mz += kz / kl * 0.4;
             if (body.onGround) body.my = 0.36;
         }
+        m.actorHurt(this, attacker, byPlayer, mob);          // allies of its faction / the player's helpers join in (a killing blow too)
         if (health <= 0) {
             if (ses != null && ses.vehicles != null) ses.vehicles.actorDied(this);     // a driver killed in a scene: the car rolls out driverless
             if (playing) toAI();                                                      // out of the take: the body falls where it was
@@ -1004,7 +1006,6 @@ public final class Actor {
                 derpcraft.api.EventBus.post(ses, new derpcraft.api.Events.EntityDeath(null, name, byPlayer, new java.util.ArrayList<>(), 0));
             return;
         }
-        m.actorHurt(this, attacker, byPlayer, mob);          // allies of its faction / the player's helpers join in
         if (playing) return;                  // a take goes on: no reaction until it is over
         // reaction
         boolean flee = faction == Faction.FRIENDLY && guard != Guard.DEFEND || faction == Faction.NEUTRAL && onHit == OnHit.FLEE;

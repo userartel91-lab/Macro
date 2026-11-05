@@ -137,7 +137,15 @@ public final class Recording {
     private static int unit(float v) { return Math.round(Math.max(0, Math.min(1, v)) * 255); }
 
     /** Actions recorded after the last frame (the take stopped in the same tick) move onto the last frame, so they still play. */
+    /** Keeps the actions in tick order (the playback finds them by binary search). Stable: same-tick actions keep their order. */
+    public void sortActions() {
+        blocks.sort(java.util.Comparator.comparingInt(BlockAction::tick));
+        chat.sort(java.util.Comparator.comparingInt(ChatAction::tick));
+        items.sort(java.util.Comparator.comparingInt(ItemAction::tick));
+    }
+
     public void clampTicks() {
+        sortActions();
         int last = Math.max(0, frames.size() - 1);
         blocks.replaceAll(b -> b.tick() > last ? new BlockAction(last, b.x(), b.y(), b.z(), b.before(), b.after()) : b);
         chat.replaceAll(c -> c.tick() > last ? new ChatAction(last, c.text()) : c);
@@ -196,6 +204,7 @@ public final class Recording {
                     r.items.add(new ItemAction(in.readInt(), in.readByte(), in.readUTF(), in.readInt(), in.readDouble(), in.readDouble(), in.readDouble(), in.readDouble(), in.readDouble(), in.readDouble()));
             }
         }
+        r.sortActions();
         return r;
     }
 }
