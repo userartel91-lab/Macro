@@ -1,0 +1,7 @@
+/build/
+/.gradle/
+/game/
+*.iml
+.idea/
+examples/*/build/
+examples/*/.gradle/

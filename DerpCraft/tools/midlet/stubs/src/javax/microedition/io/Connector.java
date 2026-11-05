@@ -1,0 +1,1 @@
+package javax.microedition.io; public class Connector { public static final int READ=1,WRITE=2,READ_WRITE=3; public static Connection open(String u,int m,boolean t) throws java.io.IOException {return null;} }

@@ -1,0 +1,29 @@
+{
+  "name": "AK-12",
+  "fireRate": 700,
+  "mode": "auto",
+  "magazine": 30,
+  "damage": 7,
+  "range": 180,
+  "reloadTime": 1.8,
+  "reloadEmptyTime": 2.4,
+  "moveSpeed": 0.93,
+  "aimMoveSpeed": 0.55,
+  "sprintSpeed": 0.88,
+  "spreadHip": 3.5,
+  "spreadAim": 0.2,
+  "spreadPerShot": 0.3,
+  "spreadMove": 1.5,
+  "recoil": 0.85,
+  "recoilSide": 0.4,
+  "aimZoom": 1.4,
+  "aimTime": 0.22,
+  "firstPersonScale": 0.4,
+  "thirdPersonScale": 0.42,
+  "hipPosition": [
+    0.2,
+    -0.24,
+    -0.4
+  ],
+  "volume": 1
+}

@@ -1,0 +1,5 @@
+newmtl side
+Kd 0.55 0.35 0.18
+newmtl lid
+Kd 0.8 0.8 0.8
+map_Kd lid.png

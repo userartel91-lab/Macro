@@ -1,0 +1,63 @@
+plugins {
+    id 'application'
+}
+
+group = 'derpcraft'
+version = '1.14'
+
+repositories {
+    mavenCentral()
+}
+
+// LWJGL 3 (OpenGL + GLFW). Natives are picked for the OS that builds the game.
+def lwjglVersion = '3.3.4'
+def osName = System.getProperty('os.name').toLowerCase()
+def osArch = System.getProperty('os.arch').toLowerCase()
+def lwjglNatives = osName.contains('win') ? 'natives-windows'
+        : osName.contains('mac') ? (osArch.contains('aarch64') ? 'natives-macos-arm64' : 'natives-macos')
+        : (osArch.contains('aarch64') ? 'natives-linux-arm64' : 'natives-linux')
+
+dependencies {
+    implementation platform("org.lwjgl:lwjgl-bom:$lwjglVersion")
+    implementation 'org.lwjgl:lwjgl'
+    implementation 'org.lwjgl:lwjgl-glfw'
+    implementation 'org.lwjgl:lwjgl-opengl'
+    // stb_vorbis: .ogg sounds (guns)
+    implementation 'org.lwjgl:lwjgl-stb'
+    runtimeOnly "org.lwjgl:lwjgl::$lwjglNatives"
+    runtimeOnly "org.lwjgl:lwjgl-glfw::$lwjglNatives"
+    runtimeOnly "org.lwjgl:lwjgl-opengl::$lwjglNatives"
+    runtimeOnly "org.lwjgl:lwjgl-stb::$lwjglNatives"
+    // bytecode library for mod patches (derpcraft.patch)
+    implementation 'org.ow2.asm:asm:9.7.1'
+    implementation 'org.ow2.asm:asm-tree:9.7.1'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+application {
+    mainClass = 'derpcraft.Launch'
+    applicationName = 'DerpCraft'
+    // 6 GB heap is plenty for render distance 64; ZGC keeps frame times smooth (no GC stutter while filming).
+    // Generational ZGC (JDK 21+) collects the many short-lived mesh/chunk buffers far cheaper; newer JDKs use it
+    // by default and only print a harmless note about the flag.
+    applicationDefaultJvmArgs = ['-Xms1G', '-Xmx6G', '-XX:+UseZGC', '-XX:+ZGenerational', '--enable-native-access=ALL-UNNAMED', '-Dfile.encoding=UTF-8']
+}
+
+jar {
+    manifest { attributes 'Main-Class': 'derpcraft.Launch', 'Implementation-Version': project.version }
+}
+
+// "gradlew run" plays from the ./game folder (saves, resourcepacks, mods, screenshots live there)
+tasks.named('run') {
+    workingDir = file("$rootDir/game")
+    doFirst { workingDir.mkdirs() }
+}

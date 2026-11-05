@@ -1,0 +1,14 @@
+MIDlet-Name: DerpCraft Remote
+MIDlet-Vendor: DerpCraft
+MIDlet-Version: 1.2.0
+MIDlet-1: DerpCraft Remote,/icon.png,DerpRemote
+MIDlet-Icon: /icon.png
+MIDlet-Description: Wi-Fi remote for DerpCraft
+MicroEdition-Configuration: CLDC-1.1
+MicroEdition-Profile: MIDP-2.0
+MIDlet-Permissions-Opt: javax.microedition.io.Connector.http,javax.microedition.io.Connector.socket
+Nokia-MIDlet-App-Orientation: landscape
+Nokia-MIDlet-Original-Display-Size: 432,240
+Nokia-MIDlet-On-Screen-Keypad: no
+MIDlet-Jar-URL: DerpRemote.jar
+MIDlet-Jar-Size: 68893

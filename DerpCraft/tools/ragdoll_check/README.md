@@ -1,0 +1,3 @@
+# Ragdoll check (offline)
+
+`sh tools/ragdoll_check/check.sh [out dir]` (from the DerpCraft folder) runs `derpcraft.npc.Ragdoll` without the game: a body shot backwards, tipping forward, thrown against a wall, off a step, by a car, a big one, across a kerb, a headshot. For each it prints how far the sticks stretch (should stay under a few %), whether points end up inside blocks (0), when it comes to rest, where it lies; `RAGDOLL OK` / `RAGDOLL PROBLEM`. Pictures of the falls: `<out>/sheet.png` (default `/tmp/ragdoll_check`), drawn by `tools/gun_check/preview.py`. New cases: add a line to `cases` in `RagdollTest.java`.
