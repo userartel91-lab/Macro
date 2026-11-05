@@ -1111,6 +1111,11 @@ public final class EntityRenderer {
         }
         pouches(p, bodyM, skin);
         if (gunM != null) {
+            if (p == player && !shadowPass) {      // where the player's muzzle is drawn (shot smoke, light and tracer start there)
+                float[] mp = gun.muzzlePoint, fo = gun.flashOffset, o = new float[4];
+                gunM.transform(mp[0] + fo[0], mp[1] + fo[1], mp[2] + fo[2], o);
+                playerMuzzle = new double[]{camX + o[0], camY + o[1], camZ + o[2]};
+            }
             drawGun(gunM, gun, hold3p.magMoved ? hold3p.mag : null, hold3p.slide, hold3p.magMode == 0);
             if (hold3p.magMode == 2 && gun.mag != null) modelGroups(new Mat4().set(upper).mul(hold3p.magBody), gun.mag.groups);   // the new one in the hand
         }
@@ -1235,6 +1240,8 @@ public final class EntityRenderer {
 
     /** Field of view of the first person gun (narrower through the sights, like the world's zoom). */
     public float gunFov = 70;
+    /** The muzzle of the gun in the player's hands as last drawn in third person (world), or null. */
+    public double[] playerMuzzle;
 
     /** First person gun: the model with its animated parts, the player's arms holding it, casings, the muzzle flash. */
     /** Projection of the last first person drawing (hand, item, gun, fists) and its depth range: ambient occlusion of the hand. */

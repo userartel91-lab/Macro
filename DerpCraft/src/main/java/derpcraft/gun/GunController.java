@@ -247,6 +247,15 @@ public final class GunController {
     }
 
     private double muzzleX, muzzleY, muzzleZ;
+    /** The world camera of the last frame: the inverse of its view (rotation, roll, bob) and its position. */
+    private derpcraft.util.Mat4 camInv;
+    private double camX, camY, camZ;
+
+    /** Set by the session every frame: the view matrix the world was drawn with and the camera position. */
+    public void setCamera(derpcraft.util.Mat4 view, double x, double y, double z) {
+        camInv = view.inverted();
+        camX = x; camY = y; camZ = z;
+    }
     /** The world's field of view this frame (degrees, set by the session): the first person gun has its own. */
     public float worldFov = 70;
 
@@ -256,6 +265,19 @@ public final class GunController {
      * then turned with the camera. In other views: in front of the eye, a little right and down.
      */
     private double[] muzzleWorld(double ex, double ey, double ez, float yawDeg, float pitchDeg, float aim) {
+        // third person / a detached camera: the muzzle of the gun as drawn in the player's hands
+        double[] tp = s.game.entities.player != null ? s.game.entities.playerMuzzle : null;
+        if (tp != null) return tp.clone();
+        GunAnimator.Pose ps0 = anim.pose;
+        if (s.view == 0 && camInv != null && ps0.type != null && ps0.muzzle[2] < -0.01f) {
+            // first person: the flash point on the screen, put into the world with the camera of the last frame exactly as
+            // it was drawn (walking bob, roll, shake and the smooth movement between ticks included)
+            float gunFov = s.game.entities.gunFov - 14 * ps0.aim;
+            double k = Math.tan(Math.toRadians(worldFov) / 2) / Math.tan(Math.toRadians(gunFov) / 2);
+            float[] o = new float[4];
+            camInv.transform((float) (ps0.muzzle[0] * k), (float) (ps0.muzzle[1] * k), ps0.muzzle[2], o);
+            return new double[]{camX + o[0], camY + o[1], camZ + o[2]};
+        }
         double yaw = Math.toRadians(yawDeg), pitch = Math.toRadians(pitchDeg);
         double fx = -Math.sin(yaw) * Math.cos(pitch), fy = -Math.sin(pitch), fz = Math.cos(yaw) * Math.cos(pitch);
         double rx = -Math.cos(yaw), ry = 0, rz = -Math.sin(yaw);

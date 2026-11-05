@@ -1974,6 +1974,7 @@ public final class Session implements GameApi {
         Mat4 bob = st.viewBobbing && !cam.detached() && !spectator() ? bobbing(partial) : null;
         if (bob != null) view = new Mat4().set(bob).mul(view);
         game.entities.handBob = bob;
+        guns.setCamera(view, cx, cy, cz);
         Mat4 projView = new Mat4().set(proj).mul(view);
         frustum.set(projView);
         npcs.setCamera(projView, cx, cy, cz);
@@ -2041,6 +2042,7 @@ public final class Session implements GameApi {
         updatePose(partial, eyeX, eyeY - eye, eyeZ);
         boolean showModel = (this.view != 0 || cam.detached() || selfieView || vehCam) && !spectator();
         game.entities.player = showModel ? pose : null;
+        if (!showModel) game.entities.playerMuzzle = null;
         game.entities.actors.clear();
         npcs.collectPoses(game.entities.actors, partial);
         game.entities.playerShadow = !showModel && !spectator() ? pose : null;
