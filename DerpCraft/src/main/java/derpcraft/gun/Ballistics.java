@@ -66,6 +66,7 @@ public final class Ballistics {
             var own = shooter == null ? s.vehicles.playerVehicle : s.vehicles.seatedIn(shooter);
             for (var vh : s.vehicles.bulletHits(ex, ey, ez, dx, dy, dz, best, own)) {
                 if (vh.t() >= best) break;
+                vh.hole();                          // a hole that stays (until /vehicle clear)
                 if (vh.stops()) { stopped = vh; best = vh.t(); player = false; mob = null; npc = null; break; }
                 fx.vehicleImpact(ex + dx * vh.t(), ey + dy * vh.t(), ez + dz * vh.t(), dx, dy, dz, true);
             }

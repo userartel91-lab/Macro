@@ -88,6 +88,78 @@ public final class Vehicle {
     public float charred;
     public long wreckSeed;
     public float[] dmgTurn = new float[0], dmgOpen = new float[0];
+
+    // ------------------------------------------------------------------ bullet holes (kept until /vehicle clear)
+    /** Bullet holes: {part index, x, y, z, nx, ny, nz} in the part's own (model) coordinates: they move with doors. */
+    public final java.util.List<float[]> holes = new java.util.ArrayList<>();
+    public static final int MAX_HOLES = 400;
+    /** Ticks until a blast next to it sets it off (0 = none); ticks it has stood in fire and when that blows it up. */
+    public int blastIn, fireTicks, fireFuse;
+
+    /** A bullet hole on a part (model coordinates of the part, the face's normal). The oldest go when there are too many. */
+    public void addHole(int part, float x, float y, float z, float nx, float ny, float nz) {
+        if (holes.size() >= MAX_HOLES) holes.remove(0);
+        holes.add(new float[]{part, x, y, z, nx, ny, nz});
+    }
+
+    // ------------------------------------------------------------------ parts blown off in the explosion
+    /** A part torn off by the explosion: it flies, tumbles, lands and stays there (until the car is repaired). */
+    public static final class Debris {
+        /** The part's matrix when it came off, relative to the anchor point (the car's position then). */
+        public Mat4 m0;
+        public double ax, ay, az;
+        /** Its middle (relative to the anchor), the offset it flew, its speed; turn axis, angle, spin (degrees per tick). */
+        public float cx, cy, cz;
+        public double ox, oy, oz, pox, poy, poz, vx, vy, vz;
+        public float axX, axY = 1, axZ, angle, prevAngle, spin;
+        public boolean rest;
+    }
+    /** Per part (index in the model's parts): the flying / landed piece, or null while attached. */
+    public Debris[] debris = new Debris[0];
+    /** Loaded as a wreck: the pieces are put where they would have landed at the first tick. */
+    public boolean settleDebris;
+
+    /** Whether a part was blown off (not on the car any more: no clicks, no bullets, drawn where it lies). */
+    public boolean detached(int part) { return part >= 0 && part < debris.length && debris[part] != null; }
+
+    /** The matrix a part is drawn with (relative to the camera): on the car, or where its blown off piece is. */
+    public Mat4 partMatrix(VehicleModel m, int i, float partial, double camX, double camY, double camZ) {
+        VehicleModel.Part p = m.parts.get(i);
+        Debris d = i < debris.length ? debris[i] : null;
+        if (d != null) {
+            float ang = d.prevAngle + (d.angle - d.prevAngle) * partial;
+            double ox = d.pox + (d.ox - d.pox) * partial, oy = d.poy + (d.oy - d.poy) * partial, oz = d.poz + (d.oz - d.poz) * partial;
+            Mat4 r = new Mat4().translate((float) (d.ax + ox - camX), (float) (d.ay + oy - camY), (float) (d.az + oz - camZ));
+            r.translate(d.cx, d.cy, d.cz).rotate((float) Math.toRadians(ang), d.axX, d.axY, d.axZ).translate(-d.cx, -d.cy, -d.cz);
+            return r.mul(d.m0);
+        }
+        Mat4 base = baseMatrix(partial, camX, camY, camZ);
+        if (p.role == VehicleModel.BODY) return base.mul(bodyAnim(m, partial));
+        if (p.role == VehicleModel.WHEEL) return base.mul(partAnim(m, p, partial));
+        return base.mul(bodyAnim(m, partial)).mul(partAnim(m, p, partial));
+    }
+
+    /** One tick of the blown off pieces: they fly, fall, bounce on the ground and come to rest. */
+    void tickDebris(World w) {
+        for (Debris d : debris) {
+            if (d == null) continue;
+            d.pox = d.ox; d.poy = d.oy; d.poz = d.oz; d.prevAngle = d.angle;
+            if (d.rest) continue;
+            d.vy -= 0.04;
+            d.ox += d.vx; d.oy += d.vy; d.oz += d.vz;
+            d.angle += d.spin;
+            double wx = d.ax + d.ox + d.cx, wy = d.ay + d.oy + d.cy, wz = d.az + d.oz + d.cz;
+            double g = w == null ? d.ay : groundAt(w, wx, wz, wy + 0.4, 1.5f);
+            if (g == NO_GROUND) g = d.ay - 64;
+            if (wy - 0.12 <= g && d.vy < 0) {
+                d.oy = g + 0.12 - d.ay - d.cy;
+                d.vy = -d.vy * 0.25;
+                d.vx *= 0.55; d.vz *= 0.55; d.spin *= 0.45f;
+                if (Math.abs(d.vy) < 0.06 && d.vx * d.vx + d.vz * d.vz < 0.0009) { d.rest = true; d.vy = 0; }
+            }
+            if (d.ay + d.oy < -64) d.rest = true;
+        }
+    }
     /** Taken from a scene take (not from the player's own explosion): a take that does not have it repairs it. */
     public boolean wreckedByTake;
     /** The actor who drove it in a scene died: the takes of its passengers no longer move it, it rolls out and stops (until a scene starts again). */
@@ -226,14 +298,15 @@ public final class Vehicle {
                 dmgTurn[i * 3 + 2] = (r.nextFloat() - 0.5f) * 34;             // camber
                 if (r.nextInt(5) == 0) dmgTurn[i * 3] = (r.nextFloat() - 0.5f) * 20;
             } else if (p.role == VehicleModel.OPENABLE) {
-                dmgOpen[i] = 0.12f + r.nextFloat() * 0.6f;                      // hangs open a different amount
-                dmgTurn[i * 3] = (r.nextFloat() - 0.5f) * 16; dmgTurn[i * 3 + 2] = (r.nextFloat() - 0.5f) * 14; dmgTurn[i * 3 + 1] = (r.nextFloat() - 0.5f) * 10;
+                dmgOpen[i] = 0.75f + r.nextFloat() * 0.35f;                     // thrown wide open (past its stop a little)
+                dmgTurn[i * 3] = (r.nextFloat() - 0.5f) * 36; dmgTurn[i * 3 + 2] = (r.nextFloat() - 0.5f) * 30; dmgTurn[i * 3 + 1] = (r.nextFloat() - 0.5f) * 24;
             } else if (p.role == VehicleModel.STEERING) {
                 dmgTurn[i * 3 + 2] = (r.nextFloat() - 0.5f) * 40;
             }
         }
         steer = (r.nextFloat() - 0.5f) * 1.2f;
         coast = 40;
+        blowOff(m, r);
         if (flipTicks > 0) {
             // the roll stops somewhere else every time: on the side, on the roof, or it lands on its wheels
             float a = Math.abs(flip);
@@ -245,8 +318,43 @@ public final class Vehicle {
         }
     }
 
+    /**
+     * The explosion tears parts off: each door / hood / trunk with a chance of 45 %, sometimes a wheel. They fly away from
+     * the car and up, tumbling (the same pieces for the same seed: a replayed take blows off the same ones).
+     */
+    private void blowOff(VehicleModel m, java.util.Random r) {
+        debris = new Debris[m == null ? 0 : m.parts.size()];
+        if (m == null) return;
+        int wheelOff = r.nextFloat() < 0.3f ? r.nextInt(Math.max(1, m.wheels.size())) : -1, wheelNo = 0;
+        Mat4 base = baseMatrix(1, x, y, z), body = new Mat4().set(base).mul(bodyAnim(m, 1));
+        for (int i = 0; i < m.parts.size(); i++) {
+            VehicleModel.Part p = m.parts.get(i);
+            boolean off = p.role == VehicleModel.OPENABLE ? r.nextFloat() < 0.45f : p.role == VehicleModel.WHEEL && wheelNo++ == wheelOff;
+            float rv = r.nextFloat(), ru = r.nextFloat(), rs = r.nextFloat(), ra = r.nextFloat(), rb = r.nextFloat(), rc = r.nextFloat();
+            if (!off) continue;
+            Debris d = new Debris();
+            d.ax = x; d.ay = y; d.az = z;
+            d.m0 = new Mat4().set(p.role == VehicleModel.WHEEL ? base : body).mul(partAnim0(m, p, 1));
+            float[] c = new float[4];
+            d.m0.transform((p.x0 + p.x1) / 2, (p.y0 + p.y1) / 2, (p.z0 + p.z1) / 2, c);
+            d.cx = c[0]; d.cy = c[1]; d.cz = c[2];
+            // away from the middle of the car, and up
+            float[] mid = new float[4];
+            body.transform((m.minX + m.maxX) / 2, m.maxY * 0.4f, (m.minZ + m.maxZ) / 2, mid);
+            double hx = c[0] - mid[0], hz = c[2] - mid[2], hl = Math.sqrt(hx * hx + hz * hz) + 1e-6;
+            double sp = 0.22 + rv * 0.28;
+            d.vx = hx / hl * sp + (x - px); d.vz = hz / hl * sp + (z - pz);
+            d.vy = 0.38 + ru * 0.3;
+            d.spin = (8 + rs * 18) * (ra < 0.5f ? -1 : 1);
+            double ax = rb - 0.5, ay = 0.3 + rc, az = ra - 0.5, al = Math.sqrt(ax * ax + ay * ay + az * az);
+            d.axX = (float) (ax / al); d.axY = (float) (ay / al); d.axZ = (float) (az / al);
+            debris[i] = d;
+        }
+    }
+
     /** Back to a working car. */
     public void repair() {
+        debris = new Debris[0]; settleDebris = false;
         wrecked = false; wreckAge = 0; charred = 0; wreckedByTake = false;
         wreckTarget = Float.NaN;
         dmgTurn = new float[0]; dmgOpen = new float[0];

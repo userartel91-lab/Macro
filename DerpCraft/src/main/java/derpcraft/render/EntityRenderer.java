@@ -174,6 +174,7 @@ public final class EntityRenderer {
                        Raycast.Hit target, float breakProgress, int renderDistanceBlocks, derpcraft.util.Frustum frustum) {
         world = w;
         camX = cx; camY = cy; camZ = cz;
+        lastPartial = partial;
         dynFp = fp;
         sun = fp.sun; gamma = fp.gamma; flicker = fp.flicker; colored = fp.coloredLight > 0;
         if (meshVersion != assets.version) { spriteMeshes.clear(); meshVersion = assets.version; }
@@ -313,8 +314,10 @@ public final class EntityRenderer {
                 partMeshes.clear();
                 meshVersion2 = derpcraft.vehicle.Transports.version();
             }
-            for (derpcraft.vehicle.VehicleModel.Part p : vm.parts) {
-                Mat4 m = p.role == derpcraft.vehicle.VehicleModel.BODY ? body
+            for (int pi = 0; pi < vm.parts.size(); pi++) {
+                derpcraft.vehicle.VehicleModel.Part p = vm.parts.get(pi);
+                Mat4 m = v.detached(pi) ? v.partMatrix(vm, pi, partial, camX, camY, camZ)       // blown off: where the piece lies
+                        : p.role == derpcraft.vehicle.VehicleModel.BODY ? body
                         : new Mat4().set(p.role == derpcraft.vehicle.VehicleModel.WHEEL ? base : body).mul(v.partAnim(vm, p, partial));
                 StaticMesh sm = partMeshes.get(p);
                 if (sm == null) { sm = new StaticMesh(p.groups); partMeshes.put(p, sm); }
@@ -1531,7 +1534,11 @@ public final class EntityRenderer {
 
     /** Bullet holes: a dark round mark with a soft edge on the face (darkens what is under it), fading at the end. */
     private void bulletHoles(derpcraft.util.Frustum frustum) {
-        if (holes.isEmpty() || world == null) return;
+        if (world == null) return;
+        boolean carHoles = false;
+        derpcraft.vehicle.Vehicles vsH = derpcraft.vehicle.Vehicles.current;
+        if (vsH != null) for (derpcraft.vehicle.Vehicle v : vsH.list()) if (!v.holes.isEmpty()) { carHoles = true; break; }
+        if (holes.isEmpty() && !carHoles) return;
         long now = world.gameTime;
         mb.flush();
         glDepthMask(false);
@@ -1574,12 +1581,67 @@ public final class EntityRenderer {
                 mb.color(0.15f, 0.13f, 0.11f, 0); mb.v(ox1, oy1, oz1, 0, 0); mb.v(ox0, oy0, oz0, 0, 0);
             }
         }
+        if (carHoles) vehicleHoles(frustum);
         mb.flush();
         mb.sky = sky;
         mb.color(1, 1, 1, 1);
         glDisable(GL_POLYGON_OFFSET_FILL);
         glDepthMask(true);
     }
+
+    /** Bullet holes on vehicles (they stay): drawn on the part they hit, moving with it (an opening door, a blown off hood). */
+    private void vehicleHoles(derpcraft.util.Frustum frustum) {
+        derpcraft.vehicle.Vehicles vs = derpcraft.vehicle.Vehicles.current;
+        if (vs == null) return;
+        float[] a = new float[4], b = new float[4];
+        for (derpcraft.vehicle.Vehicle v : vs.list()) {
+            if (v.holes.isEmpty()) continue;
+            derpcraft.vehicle.VehicleModel vm = v.vm();
+            if (vm == null) continue;
+            double ix = v.px + (v.x - v.px) * lastPartial, iz = v.pz + (v.z - v.pz) * lastPartial;
+            if ((ix - camX) * (ix - camX) + (iz - camZ) * (iz - camZ) > 64 * 64) continue;
+            Mat4[] mats = new Mat4[vm.parts.size()];
+            for (float[] h : v.holes) {
+                int pi = (int) h[0];
+                if (pi < 0 || pi >= mats.length) continue;           // the model changed since
+                if (mats[pi] == null) mats[pi] = v.partMatrix(vm, pi, lastPartial, camX, camY, camZ);
+                Mat4 m = mats[pi];
+                m.transform(h[1], h[2], h[3], a);
+                m.transform(h[1] + h[4], h[2] + h[5], h[3] + h[6], b);
+                float x = a[0], y = a[1], z = a[2];
+                if (frustum != null && !frustum.testAabb(x - 0.1f, y - 0.1f, z - 0.1f, x + 0.1f, y + 0.1f, z + 0.1f)) continue;
+                float nx = b[0] - x, ny = b[1] - y, nz = b[2] - z, nl = (float) Math.sqrt(nx * nx + ny * ny + nz * nz) + 1e-9f;
+                nx /= nl; ny /= nl; nz /= nl;
+                // two axes across the face
+                float ux, uy, uz;
+                if (Math.abs(ny) < 0.9f) { ux = nz; uy = 0; uz = -nx; } else { ux = 1; uy = 0; uz = 0; }
+                float ul = (float) Math.sqrt(ux * ux + uy * uy + uz * uz) + 1e-9f; ux /= ul; uy /= ul; uz /= ul;
+                float wx = ny * uz - nz * uy, wy = nz * ux - nx * uz, wz = nx * uy - ny * ux;
+                float r = 0.032f, outer = r * 1.8f;
+                int n = 8;
+                float turn = Math.abs(h[1] * 13.7f + h[3] * 7.1f) % 6.28f;          // fixed per hole (no flicker)
+                for (int k = 0; k < n; k++) {
+                    double a0 = turn + k * Math.PI * 2 / n, a1 = turn + (k + 1) * Math.PI * 2 / n;
+                    float r0 = r * (k % 2 == 0 ? 1.15f : 0.9f), r1 = r * ((k + 1) % 2 == 0 ? 1.15f : 0.9f);
+                    float c0 = (float) Math.cos(a0), s0 = (float) Math.sin(a0), c1 = (float) Math.cos(a1), s1 = (float) Math.sin(a1);
+                    float ix0 = x + (ux * c0 + wx * s0) * r0, iy0 = y + (uy * c0 + wy * s0) * r0, iz0 = z + (uz * c0 + wz * s0) * r0;
+                    float ix1 = x + (ux * c1 + wx * s1) * r1, iy1 = y + (uy * c1 + wy * s1) * r1, iz1 = z + (uz * c1 + wz * s1) * r1;
+                    float ox0 = x + (ux * c0 + wx * s0) * outer, oy0 = y + (uy * c0 + wy * s0) * outer, oz0 = z + (uz * c0 + wz * s0) * outer;
+                    float ox1 = x + (ux * c1 + wx * s1) * outer, oy1 = y + (uy * c1 + wy * s1) * outer, oz1 = z + (uz * c1 + wz * s1) * outer;
+                    mb.color(0.02f, 0.02f, 0.02f, 0.97f); mb.v(x, y, z, 0, 0);
+                    mb.color(0.08f, 0.08f, 0.08f, 0.9f); mb.v(ix0, iy0, iz0, 0, 0); mb.v(ix1, iy1, iz1, 0, 0);
+                    // a bright rim of bare metal, fading out
+                    mb.color(0.55f, 0.55f, 0.55f, 0.7f); mb.v(ix0, iy0, iz0, 0, 0); mb.v(ix1, iy1, iz1, 0, 0);
+                    mb.color(0.4f, 0.4f, 0.4f, 0); mb.v(ox1, oy1, oz1, 0, 0);
+                    mb.color(0.55f, 0.55f, 0.55f, 0.7f); mb.v(ix0, iy0, iz0, 0, 0);
+                    mb.color(0.4f, 0.4f, 0.4f, 0); mb.v(ox1, oy1, oz1, 0, 0); mb.v(ox0, oy0, oz0, 0, 0);
+                }
+            }
+        }
+    }
+
+    /** The partial tick of the frame being drawn (for things drawn in later passes). */
+    private float lastPartial;
 
     // ------------------------------------------------------------------------------------------ tracers
     /** A glowing bullet: flies from the muzzle to where it hit, a streak 'length' long behind its head. */

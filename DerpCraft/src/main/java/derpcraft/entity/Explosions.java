@@ -92,5 +92,6 @@ public final class Explosions {
             if (!p.flying) s.pushPlayer(dx / d * impact, dy / d * impact * 0.6 + 0.15, dz / d * impact);
         }
         s.game.entities.explosion(x, y, z, power);
+        if (s.vehicles != null) s.vehicles.blast(x, y, z, power);          // cars next to it go up too
     }
 }

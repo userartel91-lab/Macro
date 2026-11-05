@@ -127,7 +127,7 @@ public final class Vehicles {
     }
 
     public static void registerCommand(derpcraft.api.ModContext c) {
-        c.addCommand("vehicle", "[name] | spawn [name] | model <name> | models | reload | list | remove [all] | info | edit | debug | explode | repair", (g, a) -> {
+        c.addCommand("vehicle", "[name] | spawn [name] | model <name> | models | reload | list | remove [all] | info | edit | debug | explode | repair | clear", (g, a) -> {
             Session s = (Session) g;
             Vehicles vs = s.vehicles;
             String sub = a.length == 0 ? "spawn" : a[0].toLowerCase(Locale.ROOT);
@@ -150,7 +150,19 @@ public final class Vehicles {
                     vs.save();
                     s.chat("Vehicle #" + v.id + " repaired");
                 }
-                case "explode" -> { if (!vs.explodeKey()) throw new IllegalArgumentException("No vehicle within 8 blocks"); }
+                case "explode" -> { if (!vs.explodeKey()) throw new IllegalArgumentException("Look at a vehicle (up to " + (int) LOOK_RANGE + " blocks)"); }
+                case "clear" -> {
+                    // the vehicle you look at (or ride): bullet holes gone, burnt / blown off parts back, like new
+                    Vehicle v = vs.playerVehicle != null ? vs.playerVehicle : vs.lookedAt(LOOK_RANGE);
+                    if (v == null) throw new IllegalArgumentException("Look at a vehicle (up to " + (int) LOOK_RANGE + " blocks)");
+                    int n = v.holes.size();
+                    boolean wr = v.wrecked;
+                    v.holes.clear();
+                    v.repair();
+                    v.fireTicks = 0; v.blastIn = 0;
+                    vs.save();
+                    s.chat("Vehicle #" + v.id + " is like new" + (n > 0 ? " (" + n + " bullet holes gone)" : "") + (wr ? " (repaired)" : ""));
+                }
                 case "debug" -> {
                     Vehicle v = vs.playerVehicle != null ? vs.playerVehicle : vs.nearest(s.player.x, s.player.z, 16);
                     if (v == null) throw new IllegalArgumentException("No vehicle");
@@ -265,6 +277,10 @@ public final class Vehicles {
                 continue;
             }
             checkRiders(v);
+            if (v.settleDebris) { v.settleDebris = false; for (int k = 0; k < 600; k++) v.tickDebris(w); }
+            v.tickDebris(w);
+            if (v.blastIn > 0 && --v.blastIn == 0 && !v.wrecked) explode(v, false);      // a blast next to it set it off
+            if (m != null) fireUnder(v, m);
             boolean replayed = v.replayTick >= w.gameTime - 1;
             v.tick(w, replayed);
             v.throttle = 0; v.steerIn = 0; v.handbrake = false; v.speedLimit = Vehicle.NO_LIMIT;
@@ -481,11 +497,79 @@ public final class Vehicles {
      * is then the selfie key as before).
      */
     public boolean explodeKey() {
-        Vehicle v = playerVehicle != null ? playerVehicle : s.targetVehicle != null && s.targetVehicle.v != null ? s.targetVehicle.v : nearest(s.player.x, s.player.z, 8);
+        Vehicle v = playerVehicle != null ? playerVehicle : lookedAt(LOOK_RANGE);
+        if (v == null) v = nearest(s.player.x, s.player.z, 8);
         if (v == null || s.spectator()) return false;
         if (v.wrecked) { s.chat("§7It is already burnt out (/vehicle repair)"); return true; }
         explode(v, false);
         return true;
+    }
+
+    /** How far Alt + End and /vehicle clear reach along the look (blocks). */
+    public static final double LOOK_RANGE = 64;
+
+    /** The vehicle under the crosshair up to 'max' blocks (not behind a wall), or null. */
+    public Vehicle lookedAt(double max) {
+        var p = s.player;
+        double yr = Math.toRadians(p.yaw), pr = Math.toRadians(p.pitch);
+        double dx = -Math.sin(yr) * Math.cos(pr), dy = -Math.sin(pr), dz = Math.cos(yr) * Math.cos(pr);
+        double ex = p.x, ey = p.y + p.eyeHeight, ez = p.z;
+        var wall = derpcraft.game.Raycast.cast(s.world, ex, ey, ez, dx, dy, dz, max, false);
+        if (wall != null) max = Math.sqrt((wall.hx - ex) * (wall.hx - ex) + (wall.hy - ey) * (wall.hy - ey) + (wall.hz - ez) * (wall.hz - ez));
+        Hit h = pick(ex, ey, ez, dx, dy, dz, max, false);
+        return h == null ? null : h.v;
+    }
+
+    /**
+     * An explosion at (x, y, z) of 'power' (any: TNT, a car, a mod): cars close to it, or with it under them, blow up too,
+     * one after the other (a moment later each: a chain).
+     */
+    public void blast(double x, double y, double z, float power) {
+        double r = Math.max(2.5, power * 1.6);
+        for (Vehicle v : list) {
+            VehicleModel m = v.vm();
+            if (m == null || v.wrecked || v.blastIn > 0) continue;
+            double[] l = local(v, m, x, z, r);
+            if (l == null) continue;
+            // the nearest point of the car's box to the blast
+            double qx = Math.max(m.minX, Math.min(m.maxX, l[0])), qz = Math.max(m.minZ, Math.min(m.maxZ, l[1]));
+            double dy = y < v.y ? v.y - y : y > v.y + m.maxY ? y - v.y - m.maxY : 0;
+            double d = Math.sqrt((l[0] - qx) * (l[0] - qx) + (l[1] - qz) * (l[1] - qz) + dy * dy);
+            if (d > r) continue;
+            v.blastIn = 5 + random.nextInt(10);          // a quarter to three quarters of a second later
+        }
+    }
+
+    /** Fire or lava under / at the car: after 20-30 seconds in it, it blows up (it smokes from under the hood meanwhile). */
+    private void fireUnder(Vehicle v, VehicleModel m) {
+        if (v.wrecked) { v.fireTicks = 0; return; }
+        if ((s.world.gameTime + v.id) % 10 != 0) { if (v.fireTicks > 0) fireSmoke(v, m); return; }
+        boolean fire = false;
+        double[] c = new double[3];
+        int y0 = (int) Math.floor(v.y) - 1, y1 = (int) Math.floor(v.y + 0.5);
+        for (float fx = m.minX; fx <= m.maxX + 0.01f && !fire; fx += Math.max(0.5f, (m.maxX - m.minX) / 3)) {
+            for (float fz = m.minZ; fz <= m.maxZ + 0.01f && !fire; fz += Math.max(0.5f, (m.maxZ - m.minZ) / 5)) {
+                v.toWorld(fx, 0, fz, c);
+                int bx = (int) Math.floor(c[0]), bz = (int) Math.floor(c[2]);
+                for (int by = y0; by <= y1; by++) {
+                    String n = s.world.getBlock(bx, by, bz).name;
+                    if (n.equals("fire") || n.contains("lava")) { fire = true; break; }
+                }
+            }
+        }
+        if (fire) {
+            if (v.fireTicks == 0) v.fireFuse = 400 + random.nextInt(201);
+            v.fireTicks += 10;
+            if (v.fireTicks >= v.fireFuse) { v.fireTicks = 0; explode(v, false); }
+        } else v.fireTicks = Math.max(0, v.fireTicks - 20);
+    }
+
+    private void fireSmoke(Vehicle v, VehicleModel m) {
+        derpcraft.render.EntityRenderer er = s.game == null ? null : s.game.entities;
+        if (er == null || random.nextFloat() > 0.15f + 0.5f * v.fireTicks / (float) Math.max(1, v.fireFuse)) return;
+        double[] w = new double[3];
+        v.bodyPointAt(m, (random.nextFloat() - 0.5f) * (m.maxX - m.minX) * 0.6f, m.maxY * 0.5f, m.minZ + (m.maxZ - m.minZ) * 0.2f, 1, w);
+        er.wreckSmoke(w[0], w[1], w[2], 0.25f + 0.4f * v.fireTicks / (float) Math.max(1, v.fireFuse));
     }
 
     /**
@@ -1047,7 +1131,10 @@ public final class Vehicles {
 
     // ================================================================== bullets
     /** A vehicle part a bullet meets: where along the ray, and whether the part stops it. */
-    public record BulletHit(Vehicle v, VehicleModel.Part part, double t, boolean stops) {}
+    public record BulletHit(Vehicle v, VehicleModel.Part part, double t, boolean stops, int index, float[] local) {
+        /** Leaves a bullet hole where it hit (the part's own coordinates, so it moves with a door). */
+        public void hole() { if (local != null) v.addHole(index, local[0], local[1], local[2], local[3], local[4], local[5]); }
+    }
 
     /**
      * The parts of vehicles a bullet ray meets before 'max' (nearest first; one entry per part), except those of 'skip'
@@ -1068,15 +1155,23 @@ public final class Vehicles {
             v.toLocal(ox, oy, oz, lo);
             v.localDir(dx, dy, dz, ld);
             VehicleType type = v.type();
-            for (VehicleModel.Part p : m.parts) {
+            for (int pi = 0; pi < m.parts.size(); pi++) {
+                VehicleModel.Part p = m.parts.get(pi);
+                if (v.detached(pi)) continue;
                 Mat4 inv = v.partAnim(m, p, 1).inverted();
                 float[] o4 = new float[4], d4 = new float[4];
                 inv.transform((float) lo[0], (float) lo[1], (float) lo[2], o4);
                 inv.transform((float) (lo[0] + ld[0]), (float) (lo[1] + ld[1]), (float) (lo[2] + ld[2]), d4);
                 float rdx = d4[0] - o4[0], rdy = d4[1] - o4[1], rdz = d4[2] - o4[2];
                 if (!rayBox(o4[0], o4[1], o4[2], rdx, rdy, rdz, p.x0 - 0.01, p.y0 - 0.01, p.z0 - 0.01, p.x1 + 0.01, p.y1 + 0.01, p.z1 + 0.01, max)) continue;
-                double t = rayTris(p, o4[0], o4[1], o4[2], rdx, rdy, rdz, max);
-                if (t < max) out.add(new BulletHit(v, p, t, type.stopsBullets(p)));
+                float[] nrm = new float[3];
+                double t = rayTris(p, o4[0], o4[1], o4[2], rdx, rdy, rdz, max, nrm);
+                if (t >= max) continue;
+                // the hole: the hit point a hair out of the face, the face turned towards the shot
+                float nx = nrm[0], ny = nrm[1], nz = nrm[2];
+                if (nx * rdx + ny * rdy + nz * rdz > 0) { nx = -nx; ny = -ny; nz = -nz; }
+                float[] loc = {(float) (o4[0] + rdx * t) + nx * 0.004f, (float) (o4[1] + rdy * t) + ny * 0.004f, (float) (o4[2] + rdz * t) + nz * 0.004f, nx, ny, nz};
+                out.add(new BulletHit(v, p, t, type.stopsBullets(p), pi, loc));
             }
         }
         out.sort(java.util.Comparator.comparingDouble(BulletHit::t));
@@ -1438,7 +1533,9 @@ public final class Vehicles {
             // a door wins over body parts just in front of it (sills, pillars, mirrors) so it is easy to click
             double bodyT = Double.MAX_VALUE, doorT = Double.MAX_VALUE;
             int door = -1;
-            for (VehicleModel.Part p : m.parts) {
+            for (int pi = 0; pi < m.parts.size(); pi++) {
+                VehicleModel.Part p = m.parts.get(pi);
+                if (v.detached(pi)) continue;                    // blown off: lies somewhere else
                 boolean opens = p.role == VehicleModel.OPENABLE;
                 if (own && !opens) continue;
                 Mat4 inv = v.partAnim(m, p, 1).inverted();
@@ -1504,6 +1601,11 @@ public final class Vehicles {
 
     /** Nearest triangle of a part along a ray (Moller-Trumbore), or Double.MAX_VALUE. */
     private static double rayTris(VehicleModel.Part p, float ox, float oy, float oz, float dx, float dy, float dz, double max) {
+        return rayTris(p, ox, oy, oz, dx, dy, dz, max, null);
+    }
+
+    /** The same, also the (unit) normal of the triangle hit into 'nOut' (when not null). */
+    private static double rayTris(VehicleModel.Part p, float ox, float oy, float oz, float dx, float dy, float dz, double max, float[] nOut) {
         double best = Double.MAX_VALUE;
         for (int gi = 0; gi < p.groups.size(); gi++) {
             Model3D.Group g = p.groups.get(gi);
@@ -1531,7 +1633,14 @@ public final class Vehicles {
                 float w = (dx * qx + dy * qy + dz * qz) * inv;
                 if (w < 0 || u + w > 1) continue;
                 float tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
-                if (tt > 1e-4f && tt < best && tt < max) best = tt;
+                if (tt > 1e-4f && tt < best && tt < max) {
+                    best = tt;
+                    if (nOut != null) {
+                        float nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+                        float nl = (float) Math.sqrt(nx * nx + ny * ny + nz * nz) + 1e-12f;
+                        nOut[0] = nx / nl; nOut[1] = ny / nl; nOut[2] = nz / nl;
+                    }
+                }
             }
             }
         }
@@ -1871,6 +1980,28 @@ public final class Vehicles {
     }
 
     // ================================================================== files
+    /** Bullet holes as text: "part,x,y,z,nx,ny,nz;..." (3 decimals). */
+    public static String holesText(List<float[]> holes) {
+        StringBuilder sb = new StringBuilder();
+        for (float[] h : holes) {
+            if (sb.length() > 0) sb.append(';');
+            sb.append((int) h[0]);
+            for (int i = 1; i < 7; i++) sb.append(',').append(Math.round(h[i] * 1000) / 1000f);
+        }
+        return sb.toString();
+    }
+
+    public static List<float[]> holesFrom(String s) {
+        List<float[]> l = new ArrayList<>();
+        if (s == null || s.isBlank()) return l;
+        for (String part : s.split(";")) {
+            String[] v = part.split(",");
+            if (v.length < 7) continue;
+            try { float[] h = new float[7]; for (int i = 0; i < 7; i++) h[i] = Float.parseFloat(v[i]); l.add(h); } catch (NumberFormatException ignored) {}
+        }
+        return l;
+    }
+
     public void save() {
         Properties p = new Properties();
         p.setProperty("nextId", String.valueOf(nextId));
@@ -1884,6 +2015,7 @@ public final class Vehicles {
             p.setProperty(k + "open", o.toString());
             if (v.lightsOn) p.setProperty(k + "lights", "1");
             if (v.wrecked) p.setProperty(k + "wreck", v.wreckSeed + "," + v.wreckAge + "," + v.flip);
+            if (!v.holes.isEmpty()) p.setProperty(k + "holes", holesText(v.holes));
             for (int i = 0; i < v.slots.length; i++) {
                 Vehicle.Slot sl = v.slots[i];
                 if (sl.state == 0) continue;
@@ -1929,8 +2061,9 @@ public final class Vehicles {
             String wk = p.getProperty(k + "wreck");
             if (wk != null) {
                 String[] wp = wk.split(",");
-                try { v.vm(); v.wreck(Long.parseLong(wp[0])); v.wreckAge = Math.min(SMOKE_TICKS, Integer.parseInt(wp[1])); v.charred = 1; v.flip = v.prevFlip = wp.length > 2 ? Float.parseFloat(wp[2]) : 0; } catch (RuntimeException ignored) {}
+                try { v.vm(); v.wreck(Long.parseLong(wp[0])); v.wreckAge = Math.min(SMOKE_TICKS, Integer.parseInt(wp[1])); v.charred = 1; v.flip = v.prevFlip = wp.length > 2 ? Float.parseFloat(wp[2]) : 0; v.settleDebris = true; } catch (RuntimeException ignored) {}
             }
+            v.holes.addAll(holesFrom(p.getProperty(k + "holes", "")));
             String o = p.getProperty(k + "open", "");
             v.openTarget = new boolean[o.length()]; v.open = new float[o.length()]; v.prevOpen = new float[o.length()];
             for (int i = 0; i < o.length(); i++) { v.openTarget[i] = o.charAt(i) == '1'; v.open[i] = v.prevOpen[i] = v.openTarget[i] ? 1 : 0; }

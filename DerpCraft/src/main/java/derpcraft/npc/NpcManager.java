@@ -523,12 +523,15 @@ public final class NpcManager {
         final LinkedHashMap<Long, Snap> blocks = new LinkedHashMap<>();
         final List<derpcraft.entity.ItemEntity> items = new ArrayList<>();
         final Set<Integer> vehicles = new HashSet<>();
-        boolean isEmpty() { return blocks.isEmpty() && items.isEmpty(); }
+        /** Bullet holes of vehicles as they were (vehicle id -> copy of its holes). */
+        final Map<Integer, List<float[]>> carHoles = new HashMap<>();
+        boolean isEmpty() { return blocks.isEmpty() && items.isEmpty() && carHoles.isEmpty(); }
         /** Adds another (later) snapshot: positions already here keep their older state. */
         void absorb(WorldSnapshot later) {
             for (var e : later.blocks.entrySet()) blocks.putIfAbsent(e.getKey(), e.getValue());
             items.addAll(later.items);
             vehicles.addAll(later.vehicles);
+            for (var e : later.carHoles.entrySet()) carHoles.putIfAbsent(e.getKey(), e.getValue());
         }
     }
 
@@ -544,6 +547,36 @@ public final class NpcManager {
     private boolean applying;
     /** True while NPCs tick (scene actors, AI): their block changes never go into the player's take. */
     private boolean npcTicking;
+
+    /** Remembers the bullet holes of the vehicles within 'r' blocks of (x, z) (a copy each, unless the snapshot has that car already). */
+    private void rememberCars(WorldSnapshot snap, double x, double z, double r) {
+        if (snap == null || s.vehicles == null) return;
+        for (var v : s.vehicles.list()) {
+            double dx = v.x - x, dz = v.z - z;
+            if (dx * dx + dz * dz > r * r || snap.carHoles.containsKey(v.id)) continue;
+            List<float[]> copy = new ArrayList<>();
+            for (float[] h : v.holes) copy.add(h.clone());
+            snap.carHoles.put(v.id, copy);
+        }
+    }
+
+    /**
+     * A take began with these cars this clean: when it plays, a car that has more bullet holes now (from the take itself,
+     * or shot later) is as it was then; the shots of the replay make the holes again.
+     */
+    private void carsAsRecorded(Track.Take tk, WorldSnapshot snap) {
+        if (s.vehicles == null) return;
+        for (var e : tk.rec.vehicleHoles.entrySet()) {
+            var v = s.vehicles.byId(e.getKey());
+            if (v == null || v.holes.size() <= e.getValue()) continue;
+            if (snap != null && !snap.carHoles.containsKey(v.id)) {
+                List<float[]> copy = new ArrayList<>();
+                for (float[] h : v.holes) copy.add(h.clone());
+                snap.carHoles.put(v.id, copy);
+            }
+            while (v.holes.size() > e.getValue()) v.holes.remove(v.holes.size() - 1);
+        }
+    }
 
     /** Remembers a block (state and block entity) before it is changed, unless the snapshot has it already. */
     private void remember(WorldSnapshot snap, int x, int y, int z) {
@@ -641,6 +674,10 @@ public final class NpcManager {
         } finally { applying = false; }
         for (var ie : w.items) ie.dead = true;
         if (s.vehicles != null) for (int id : w.vehicles) s.vehicles.repairForScene(id);
+        if (s.vehicles != null) for (var e : w.carHoles.entrySet()) {          // the bullet holes the cars had
+            var v = s.vehicles.byId(e.getKey());
+            if (v != null) { v.holes.clear(); v.holes.addAll(e.getValue()); }
+        }
         if (!left.blocks.isEmpty() && group != null) keepForUndo(group, left);
         return n;
     }
@@ -935,6 +972,10 @@ public final class NpcManager {
             Collection<Actor> who = run.only == null ? null : run.cast;
             revertBlocks(run.name, who, run.snap);
             if (run.start > 0) applyBlocksBefore(run.name, who, run.start, run.snap);
+            for (Actor a : run.cast) {
+                rememberCars(run.snap, a.x(), a.z(), SCENE_REACH);      // the cars' holes before the play, for restoring
+                if (a.sceneTake != null) carsAsRecorded(a.sceneTake, run.snap);
+            }
             run.gathering = false;
             run.tick = run.start;
             for (Actor a : run.cast) a.mode = Actor.Mode.PLAYING;
@@ -1235,6 +1276,7 @@ public final class NpcManager {
         Track tr = a.trackOrNew(recScene);
         Track.Take base = tr.take();
         recSnap = new WorldSnapshot();
+        rememberCars(recSnap, s.player.x, s.player.z, SCENE_REACH);
         revertBlocks(recScene, null, recSnap);
         if (fromTick > 0) applyBlocksBefore(recScene, null, fromTick, recSnap);
         take = new Recording();
@@ -1242,6 +1284,7 @@ public final class NpcManager {
         recTake = new Track.Take(take, null);
         recTake.offset = punch ? base.offset : fromTick;
         if (punch) {
+            take.vehicleHoles.putAll(base.rec.vehicleHoles);           // the cars as they were where the old take began
             // keep the old take up to here (timed, moved and turned the way it plays)
             for (int t = base.offset; t < fromTick; t++) take.frames.add(base.frame(t));
             for (var b : base.rec.blocks) if (base.inside(b.tick()) && base.sceneTick(b.tick()) < fromTick) {
@@ -1309,6 +1352,11 @@ public final class NpcManager {
 
     private void beginTake() {
         takeStarted = true;
+        // how clean the cars around are now: a replay starts with them like this
+        if (s.vehicles != null) for (var v : s.vehicles.list()) {
+            double dx = v.x - s.player.x, dz = v.z - s.player.z;
+            if (dx * dx + dz * dz < 96 * 96) take.vehicleHoles.putIfAbsent(v.id, v.holes.size());
+        }
         recTick = recStart;
         for (Actor o : recCast) o.mode = othersPlayWhileRecording ? Actor.Mode.PLAYING : Actor.Mode.ON_MARK;
         startAiTakes();

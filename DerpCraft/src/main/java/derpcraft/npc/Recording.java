@@ -69,6 +69,8 @@ public final class Recording {
     public final List<BlockAction> blocks = new ArrayList<>();
     public final List<ChatAction> chat = new ArrayList<>();
     public final List<ItemAction> items = new ArrayList<>();
+    /** (version 8) the vehicles near the player when the take began and how many bullet holes each had then (vehicle id -> holes). */
+    public final Map<Integer, Integer> vehicleHoles = new LinkedHashMap<>();
 
     public int length() { return frames.size(); }
 
@@ -80,7 +82,7 @@ public final class Recording {
     }
 
     // ------------------------------------------------------------------ files
-    private static final int MAGIC = 0x44435243, VERSION = 7;  // "DCRC"
+    private static final int MAGIC = 0x44435243, VERSION = 8;  // "DCRC"
 
     public void save(Path file) throws IOException {
         Files.createDirectories(file.getParent());
@@ -130,6 +132,8 @@ public final class Recording {
                 out.writeInt(a.tick()); out.writeByte(a.kind()); out.writeUTF(a.item()); out.writeInt(a.count());
                 out.writeDouble(a.x()); out.writeDouble(a.y()); out.writeDouble(a.z()); out.writeDouble(a.dx()); out.writeDouble(a.dy()); out.writeDouble(a.dz());
             }
+            out.writeInt(vehicleHoles.size());
+            for (var e : vehicleHoles.entrySet()) { out.writeInt(e.getKey()); out.writeInt(e.getValue()); }
         }
         Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
     }
@@ -202,6 +206,10 @@ public final class Recording {
                 int ni = in.readInt();
                 for (int i = 0; i < ni; i++)
                     r.items.add(new ItemAction(in.readInt(), in.readByte(), in.readUTF(), in.readInt(), in.readDouble(), in.readDouble(), in.readDouble(), in.readDouble(), in.readDouble(), in.readDouble()));
+            }
+            if (version >= 8) {
+                int nv = in.readInt();
+                for (int i = 0; i < nv; i++) r.vehicleHoles.put(in.readInt(), in.readInt());
             }
         }
         r.sortActions();
