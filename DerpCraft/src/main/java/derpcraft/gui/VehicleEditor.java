@@ -30,8 +30,8 @@ import static org.lwjgl.glfw.GLFW.*;
 public final class VehicleEditor extends Screen {
     private final Session s;
     private static int page = 0, scroll = 0, seatIx = 0, blockIx = 0;
-    private static final String[] PAGES = {"Speed", "Seats", "Blocks", "Size", "Suspension", "Terrain", "Weight", "Handling", "Doors", "Lights", "Surfaces"};
-    private static final String[] PAGE_LABELS = {"Speed", "Seats", "Blocks", "Size", "Susp.", "Terrain", "Weight", "Handl.", "Doors", "Lights", "Surf."};
+    private static final String[] PAGES = {"Speed", "Seats", "Blocks", "Size", "Suspension", "Terrain", "Weight", "Handling", "Doors", "Lights", "Surfaces", "Bullets"};
+    private static final String[] PAGE_LABELS = {"Speed", "Seats", "Blocks", "Size", "Susp.", "Terrain", "Weight", "Handl.", "Doors", "Lights", "Surf.", "Bullets"};
     private static final int PW = 196, ROW = 16;
     private Vehicle target;
     private int rows = 8, totalRows;
@@ -97,9 +97,9 @@ public final class VehicleEditor extends Screen {
 
     // ------------------------------------------------------------------ undo
     /** All the editor's numbers, seats, block places and pivots at a moment. */
-    private record Snap(float[] vals, List<float[]> seats, List<float[]> blocks, boolean blocksSet, Map<String, float[]> pivots, List<float[]> eyes, List<Float> yaws, List<VehicleType.Light> lights, boolean lightsSet, Map<String, Float> angles) {
+    private record Snap(float[] vals, List<float[]> seats, List<float[]> blocks, boolean blocksSet, Map<String, float[]> pivots, List<float[]> eyes, List<Float> yaws, List<VehicleType.Light> lights, boolean lightsSet, Map<String, Float> angles, Map<String, Boolean> bullets) {
         @Override public boolean equals(Object o) {
-            return o instanceof Snap n && Arrays.equals(vals, n.vals) && same(seats, n.seats) && same(eyes, n.eyes) && yaws.equals(n.yaws) && same(blocks, n.blocks) && blocksSet == n.blocksSet && lightsSet == n.lightsSet && sameLights(lights, n.lights) && angles.equals(n.angles);
+            return o instanceof Snap n && Arrays.equals(vals, n.vals) && same(seats, n.seats) && same(eyes, n.eyes) && yaws.equals(n.yaws) && same(blocks, n.blocks) && blocksSet == n.blocksSet && lightsSet == n.lightsSet && sameLights(lights, n.lights) && angles.equals(n.angles) && bullets.equals(n.bullets);
         }
         @Override public int hashCode() { return Arrays.hashCode(vals); }
         private static boolean sameLights(List<VehicleType.Light> a, List<VehicleType.Light> b) {
@@ -126,7 +126,7 @@ public final class VehicleEditor extends Screen {
         for (float[] a : t.eyes) ey.add(a == null ? null : a.clone());
         List<VehicleType.Light> lg = new ArrayList<>();
         for (VehicleType.Light l : t.lights) lg.add(l.copy());
-        return new Snap(v, se, bl, t.blocksSet, pv, ey, new ArrayList<>(t.seatYaws), lg, t.lightsSet, new HashMap<>(t.angles));
+        return new Snap(v, se, bl, t.blocksSet, pv, ey, new ArrayList<>(t.seatYaws), lg, t.lightsSet, new HashMap<>(t.angles), new HashMap<>(t.bullets));
     }
 
     private static void restore(VehicleType t, Snap sn) {
@@ -136,6 +136,7 @@ public final class VehicleEditor extends Screen {
         t.lights.clear(); for (VehicleType.Light l : sn.lights) t.lights.add(l.copy());
         t.lightsSet = sn.lightsSet;
         t.angles.clear(); t.angles.putAll(sn.angles);
+        t.bullets.clear(); t.bullets.putAll(sn.bullets);
         t.eyes.clear(); for (float[] a : sn.eyes) t.eyes.add(a == null ? null : a.clone());
         t.blocks.clear(); for (float[] a : sn.blocks) t.blocks.add(a.clone());
         t.blocksSet = sn.blocksSet;
@@ -183,6 +184,7 @@ public final class VehicleEditor extends Screen {
             case "Blocks" -> blocksPage(rowsToAdd, yy, x, w);
             case "Doors" -> doorsPage(rowsToAdd, yy, x, w);
             case "Lights" -> lightsPage(rowsToAdd, yy, x, w);
+            case "Bullets" -> bulletsPage(rowsToAdd, yy, x, w);
             default -> {
                 for (P p : PARAMS) if (p.page.equals(pg)) paramRow(rowsToAdd, yy, x, w, p, def);
                 if (pg.equals("Size")) rowsToAdd.add(() -> add(new Widget.Button(x, yy[0], w, ROW, "Reset the size", () -> { for (P p : PARAMS) if (p.page.equals("Size")) resetParam(p, def); game.relayout(); })));
@@ -223,6 +225,7 @@ public final class VehicleEditor extends Screen {
         VehicleType d = VehicleType.defaults();
         if (pg.equals("Seats")) return !t.seats.isEmpty();
         if (pg.equals("Blocks")) return t.blocksSet;
+        if (pg.equals("Bullets")) return !t.bullets.isEmpty();
         if (pg.equals("Lights")) return t.lightsSet;
         if (pg.equals("Doors")) return !t.angles.isEmpty() || !t.pivots.isEmpty();
         for (P p : PARAMS) if (p.page.equals(pg) && differs(p, t, d)) return true;
@@ -291,6 +294,48 @@ public final class VehicleEditor extends Screen {
             if (p == null) return;
             begin(); t.angles.remove(p.name.toLowerCase(Locale.ROOT)); t.pivots.remove(p.name.toLowerCase(Locale.ROOT)); changed(true); rebuildNow(); game.relayout();
         })));
+    }
+
+    // ------------------------------------------------------------------ bullets
+    private static int bulletIx = 0;
+
+    /** Bullets page: every part of the model, whether bullets go through it (glass, thin body panels) or stop in it. */
+    private void bulletsPage(List<Runnable> rowsToAdd, int[] yy, int x, int w) {
+        VehicleType t = type();
+        VehicleModel m = vm();
+        rowsToAdd.add(() -> {
+            int bw = (w - 4) / 3;
+            add(new Widget.Button(x, yy[0], bw, ROW, "All pass", () -> setAllBullets(false)));
+            add(new Widget.Button(x + bw + 2, yy[0], bw, ROW, "All stop", () -> setAllBullets(true)));
+            add(new Widget.Button(x + 2 * (bw + 2), yy[0], w - 2 * (bw + 2), ROW, "Defaults", () -> { begin(); t.bullets.clear(); changed(false); game.relayout(); }));
+        });
+        for (int i = 0; i < m.parts.size(); i++) {
+            final int k = i;
+            VehicleModel.Part p = m.parts.get(i);
+            rowsToAdd.add(() -> add(new Widget.Button(x, yy[0], w, ROW, () -> (k == bulletIx ? "§e> §r" : "") + p.name + " §7(" + roleName(p) + ")§r: " + (t.stopsBullets(p) ? "§cstops" : "§apasses"), () -> {
+                bulletIx = k;
+                begin();
+                boolean stop = !t.stopsBullets(p);
+                String key = p.name.toLowerCase(Locale.ROOT);
+                if (stop == (p.role == VehicleModel.WHEEL)) t.bullets.remove(key); else t.bullets.put(key, stop);
+                changed(false);
+            })));
+        }
+    }
+
+    private static String roleName(VehicleModel.Part p) {
+        return switch (p.role) { case VehicleModel.WHEEL -> "wheel"; case VehicleModel.OPENABLE -> "door/lid"; case VehicleModel.STEERING -> "wheel (steering)"; default -> "body"; };
+    }
+
+    private void setAllBullets(boolean stop) {
+        VehicleType t = type();
+        VehicleModel m = vm();
+        if (t == null || m == null) return;
+        begin();
+        t.bullets.clear();
+        for (VehicleModel.Part p : m.parts) if (stop != (p.role == VehicleModel.WHEEL)) t.bullets.put(p.name.toLowerCase(Locale.ROOT), stop);
+        changed(false);
+        game.relayout();
     }
 
     private boolean doorOpen() {
@@ -695,6 +740,7 @@ public final class VehicleEditor extends Screen {
         VehicleType d = VehicleType.defaults();
         if (pg.equals("Seats")) { t.seats.clear(); t.eyes.clear(); t.seatYaws.clear(); changed(true); rebuildNow(); }
         else if (pg.equals("Blocks")) { t.blocks.clear(); t.blocksSet = false; changed(true); rebuildNow(); }
+        else if (pg.equals("Bullets")) { t.bullets.clear(); changed(false); }
         else for (P p : PARAMS) if (p.page.equals(pg)) { p.set.accept(t, (float) p.get.applyAsDouble(d)); changed(p.model); }
         game.relayout();
     }
@@ -820,6 +866,16 @@ public final class VehicleEditor extends Screen {
         if (pg.equals("Terrain")) {     // how high a step it climbs, ahead of the front
             VehicleType t = type();
             vs.marks.add(new Vehicles.Mark(new float[]{m.minX, 0, m.minZ - 1}, new float[]{m.maxX, t.stepHeight, m.minZ - 0.2f}, 1, 0.6f, 0.1f));
+        }
+        if (pg.equals("Bullets")) {          // red boxes = parts that stop bullets, yellow = the one picked
+            VehicleType t = type();
+            for (int i = 0; i < m.parts.size(); i++) {
+                VehicleModel.Part p = m.parts.get(i);
+                boolean sel = i == bulletIx;
+                if (!sel && !t.stopsBullets(p)) continue;
+                float e = sel ? 0.03f : 0.01f;
+                vs.marks.add(new Vehicles.Mark(new float[]{p.x0 - e, p.y0 - e, p.z0 - e}, new float[]{p.x1 + e, p.y1 + e, p.z1 + e}, sel ? 1 : 0.9f, sel ? 0.9f : 0.15f, sel ? 0.1f : 0.1f));
+            }
         }
         if (pg.equals("Doors")) {
             VehicleModel.Part p = doorNow();
@@ -1040,6 +1096,17 @@ public final class VehicleEditor extends Screen {
                 l.add("short behind = a tail light. NPC drivers use");
                 l.add("them at night. Needs Dynamic Lights on.");
                 l.add(t.effectiveLights().size() + " lights" + (t.lightsSet ? "" : " (made up from the model)"));
+            }
+            case "Bullets" -> {
+                l.add("Bullets: click a part to switch it. 'passes' =");
+                l.add("a bullet goes through it (sparks where it");
+                l.add("enters) and hits whoever sits behind it;");
+                l.add("'stops' = it stays in the part (sparks).");
+                l.add("Red box = stops, yellow = the one clicked.");
+                l.add("By default wheels stop, the rest passes.");
+                int st = 0;
+                for (VehicleModel.Part p : m.parts) if (t.stopsBullets(p)) st++;
+                l.add(st + " of " + m.parts.size() + " parts stop bullets");
             }
             case "Surfaces" -> {
                 l.add("Grip and top speed on each kind of ground");

@@ -34,8 +34,12 @@ public final class PlayerStats {
     public void heal(float h) { health = Math.min(20, health + h); }
 
     /** Applies damage reduced by armor. Returns true if it hurt. */
+    /** No damage before this tick (getting out of a vehicle), except falling into the void / /kill. */
+    public long safeUntil = Long.MIN_VALUE;
+
     public boolean damage(float amount, String cause, int armor, long tick) {
         if (dead || invulnerable > 0 && amount <= 0) return false;
+        if (tick < safeUntil && !cause.equals("void")) return false;
         if (invulnerable > 10) return false;
         derpcraft.game.Session ses = derpcraft.game.Session.current;
         if (ses != null && derpcraft.api.EventBus.has(derpcraft.api.Events.PlayerDamage.class)) {

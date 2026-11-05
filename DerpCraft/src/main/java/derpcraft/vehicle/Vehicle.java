@@ -90,6 +90,8 @@ public final class Vehicle {
     public float[] dmgTurn = new float[0], dmgOpen = new float[0];
     /** Taken from a scene take (not from the player's own explosion): a take that does not have it repairs it. */
     public boolean wreckedByTake;
+    /** The actor who drove it in a scene died: the takes of its passengers no longer move it, it rolls out and stops (until a scene starts again). */
+    public boolean driverKilled;
     private float wreckTarget = Float.NaN, wreckFrom;
     private int wreckT;
     /** The slip a scene take recorded (tyre marks and smoke while it plays). */
@@ -400,7 +402,8 @@ public final class Vehicle {
         // steering eases towards the wheel input and back to the middle
         steer += Math.max(-0.12f, Math.min(0.12f, st - steer));
         if (coast > 0) coast--;
-        boolean brake = !driver && !pushed && coast == 0 || hb && drift < 0.3f && police == 0;
+        // nobody drives: the parking brake; a car whose driver was killed in a scene rolls out on its speed first
+        boolean brake = !driver && !pushed && coast == 0 && (!driverKilled || Math.abs(speed) < 0.01f) || hb && drift < 0.3f && police == 0;
         braking = onGround && driver && !tumbling && Math.abs(speed) > 0.05f
                 && (thr > 0 && speed < -0.01f || thr < 0 && speed > 0.01f || hb && drift < 0.3f && police == 0);
         if (onGround) {

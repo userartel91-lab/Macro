@@ -59,6 +59,17 @@ public final class Ballistics {
             if (tp >= 0) { best = tp; player = true; mob = null; npc = null; }
         }
         var fx = s.game.entities;
+        // vehicles: parts that let bullets through (glass, thin panels) show where it went in and it flies on; a part that
+        // stops bullets takes it (sparks) and nothing behind is hit. The shooter's own car does not count.
+        derpcraft.vehicle.Vehicles.BulletHit stopped = null;
+        if (s.vehicles != null) {
+            var own = shooter == null ? s.vehicles.playerVehicle : s.vehicles.seatedIn(shooter);
+            for (var vh : s.vehicles.bulletHits(ex, ey, ez, dx, dy, dz, best, own)) {
+                if (vh.t() >= best) break;
+                if (vh.stops()) { stopped = vh; best = vh.t(); player = false; mob = null; npc = null; break; }
+                fx.vehicleImpact(ex + dx * vh.t(), ey + dy * vh.t(), ez + dz * vh.t(), dx, dy, dz, true);
+            }
+        }
         double hx = ex + dx * best, hy = ey + dy * best, hz = ez + dz * best;
         boolean body = player || mob != null || npc != null;
         // a headshot: the top of the body (the head is the top quarter of the model), the gun's headshotMultiplier
@@ -82,6 +93,8 @@ public final class Ballistics {
         if (body) {
             fx.gunBlood(hx, hy, hz, dx, dy, dz);
             Blood.spill(hx, hy, hz, dx, dy * 0.5 + 0.1, dz, dmg * (head ? 1.6f : 1));
+        } else if (stopped != null) {
+            fx.vehicleImpact(hx, hy, hz, dx, dy, dz, false);
         } else if (h != null) {
             fx.gunImpact(s.world, h);
             String n = h.block.name;

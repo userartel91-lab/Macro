@@ -215,6 +215,7 @@ public final class Session implements GameApi {
     /** One game tick (20 a second). Not called while the world is paused (DerpCraft.worldPaused). */
     public void tick() {
         ticks++;
+        tickNpcTab();
         WorldInfo info = world.info;
         if (info.daylightCycle) info.time++;
         world.gameTime++;
@@ -793,6 +794,7 @@ public final class Session implements GameApi {
     /** Something hit the player from (fromX, fromZ): damage in survival, knockback always. */
     public void hurtPlayer(float dmg, String cause, double fromX, double fromZ) {
         if (spectator()) return;
+        if (ticks < stats.safeUntil && !cause.equals("void")) return;        // just got out of a vehicle: nothing hurts or pushes for a second
         boolean hurt = !survival() || stats.damage(dmg, cause, inv.armorPoints(), ticks);
         if (!hurt) return;
         double kx = player.x - fromX, kz = player.z - fromZ, l = Math.sqrt(kx * kx + kz * kz) + 1e-6;
@@ -1721,6 +1723,52 @@ public final class Session implements GameApi {
         }
         else return false;
         return true;
+    }
+
+    // ------------------------------------------------------------------------------------------ Tab on an NPC
+    /** The NPC looked at when Tab went down (not while recording), and whether Tab + a number was used meanwhile. */
+    private derpcraft.npc.Actor tabActor;
+    private boolean tabNumberUsed;
+
+    /** Tab pressed (outside a recording): remembers the NPC under the crosshair; what happens is decided when Tab is let go or a number is pressed. */
+    public void npcTabPressed() {
+        tabActor = targetActor;
+        tabNumberUsed = false;
+    }
+
+    /** Tab + a number while looking at an NPC. Returns true if it was used (the number does not pick a hotbar slot then). */
+    public boolean npcTabNumber(int n) {
+        derpcraft.npc.Actor a = tabActor;
+        if (a == null || !npcs.inWorld(a) || a.dead()) return false;
+        tabNumberUsed = true;
+        if (n == 1) {
+            var v = vehicles.seatedIn(a);
+            if (v != null && a.rideAlong == v.id) vehicles.ejectSeat(v, v.seatOf(a.id));
+            a.startTabPatrol(world, new java.util.Random());
+            npcs.save();
+            chat("§e" + a.name + " patrols here §7(" + a.waypoints.size() + " points; Tab on it: back to what it did)");
+        }
+        return true;
+    }
+
+    /**
+     * Every tick: Tab let go after it was pressed on an NPC (without a number): an NPC that follows you stays where it is
+     * and waits (again: follows you); one patrolling because of Tab + 1 goes back to what it did before.
+     */
+    private void tickNpcTab() {
+        derpcraft.npc.Actor a = tabActor;
+        if (a == null || Keys.GESTURE.down(game.window)) return;
+        tabActor = null;
+        if (tabNumberUsed || npcs.recording() || !npcs.inWorld(a) || a.dead()) return;
+        if (a.tabPatrol) {
+            a.endTabPatrol();
+            chat("§e" + a.name + ": " + (a.behavior == derpcraft.npc.Actor.Behavior.FOLLOW ? "follows you again" : a.behavior.label.toLowerCase(java.util.Locale.ROOT)));
+        } else if (a.behavior == derpcraft.npc.Actor.Behavior.FOLLOW) {
+            a.waiting = !a.waiting;
+            if (a.waiting) a.setHome();
+            chat("§e" + a.name + (a.waiting ? " waits here §7(Tab on it again: follows you)" : " follows you again"));
+        } else return;
+        npcs.save();
     }
 
     // ------------------------------------------------------------------------------------------ scene keys

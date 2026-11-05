@@ -1712,6 +1712,38 @@ public final class EntityRenderer {
         sprite(d, 7, true, false);
     }
 
+    /**
+     * A bullet hits a vehicle part at (x, y, z) coming along (dx, dy, dz): sparks back out and a puff of grey dust;
+     * 'through' = it goes on through the part (fewer sparks, a few bits fly out of the other side too).
+     */
+    public void vehicleImpact(double x, double y, double z, double dx, double dy, double dz, boolean through) {
+        if (assets.tables == null) return;
+        int layer = assets.blocks.layer("wool_colored_white");
+        int n = through ? 3 : 6;
+        for (int i = 0; i < n; i++) {
+            Particle p = new Particle();
+            p.x = p.px = x - dx * 0.03; p.y = p.py = y - dy * 0.03; p.z = p.pz = z - dz * 0.03;
+            p.mx = -dx * 0.14 + jit(0.14); p.my = -dy * 0.14 + jit(0.14) + 0.05; p.mz = -dz * 0.14 + jit(0.14);
+            setup(p, layer, 0xFFFFFF);
+            p.gravity = 0.04f; p.size = 0.022f; p.maxAge = 3 + rnd.nextInt(5); p.r = 1; p.g = 0.85f; p.b = 0.45f;
+            sprite(p, 49, false, true);
+        }
+        if (through) for (int i = 0; i < 3; i++) {
+            Particle p = new Particle();
+            p.x = p.px = x + dx * 0.05; p.y = p.py = y + dy * 0.05; p.z = p.pz = z + dz * 0.05;
+            p.mx = dx * 0.1 + jit(0.06); p.my = dy * 0.1 + jit(0.06); p.mz = dz * 0.1 + jit(0.06);
+            setup(p, layer, 0xFFFFFF);
+            p.gravity = 0.05f; p.size = 0.025f; p.maxAge = 6 + rnd.nextInt(6); p.r = p.g = p.b = 0.75f;
+            sprite(p, 49, false, false);
+        }
+        Particle d = new Particle();
+        d.x = d.px = x - dx * 0.06; d.y = d.py = y - dy * 0.06; d.z = d.pz = z - dz * 0.06;
+        d.mx = -dx * 0.02; d.my = 0.01; d.mz = -dz * 0.02;
+        setup(d, layer, 0xFFFFFF);
+        d.gravity = -0.001f; d.size = through ? 0.06f : 0.09f; d.maxAge = 12 + rnd.nextInt(8); d.r = d.g = d.b = 0.55f; d.fade = true; d.grow = 1.6f;
+        sprite(d, 7, true, false);
+    }
+
     // ------------------------------------------------------------------------------------------ blood
     /** A splat of blood on a face of a block (gone when the block changes; fades after BLOOD_LIFE ticks); 'dark' also picks its texture. */
     private static final class Splat {

@@ -283,6 +283,11 @@ public final class DerpCraft {
                 return;
             }
         }
+        // Tab on an NPC (not recording): Tab = wait / follow, Tab + 1 = patrol here
+        if (!s.npcs.recording()) {
+            if (!repeat && Keys.GESTURE.matches(code)) s.npcTabPressed();
+            else if (!repeat && code >= GLFW_KEY_0 && code <= GLFW_KEY_9 && Keys.GESTURE.down(window) && s.npcTabNumber(code - GLFW_KEY_0)) return;
+        }
         if (!repeat && Keys.TRANSITION.matches(code)) { s.chat(transition.toggle(this)); return; }
         if (!repeat) {
             if (Keys.RECORD_CANCEL.matches(code) && s.npcs.recording()) { s.cancelRecordingKey(); return; }

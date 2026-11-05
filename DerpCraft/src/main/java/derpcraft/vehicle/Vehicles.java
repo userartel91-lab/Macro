@@ -289,7 +289,9 @@ public final class Vehicles {
             if (r == Vehicle.PLAYER) { if (playerVehicle != v || playerSeat != i) v.riders[i] = Vehicle.NONE; continue; }
             if (r < 0) continue;
             Actor a = s.npcs.byId(r);
-            if (a == null || !s.npcs.inWorld(a) || a.dead() || a.mode() != Actor.Mode.AI || a.behavior != Actor.Behavior.DRIVE || a.vehicleId != v.id) {
+            boolean companion = a != null && a.behavior == Actor.Behavior.FOLLOW && a.rideAlong == v.id;
+            if (a == null || !s.npcs.inWorld(a) || a.dead() || a.mode() != Actor.Mode.AI || !companion && (a.behavior != Actor.Behavior.DRIVE || a.vehicleId != v.id)) {
+                if (a != null && a.rideAlong == v.id) a.rideAlong = -1;
                 eject(v, i);
             }
         }
@@ -363,7 +365,7 @@ public final class Vehicles {
             VehicleModel m = v.vm();
             if (m == null) continue;
             for (Actor a : s.npcs.actors) {
-                if (a.vehicleId == v.id && v.seatOf(a.id) >= 0 || seatedAnywhere(a)) continue;
+                if (a.seatedVehicleId() == v.id && v.seatOf(a.id) >= 0 || seatedAnywhere(a)) continue;
                 if (a.dead()) { pushBody(v, m, a); continue; }
                 if (!a.inGrace() && runOver(v, m, a)) continue;                  // hit hard: thrown, no gentle push
                 if (a.mode() == Actor.Mode.AI) carryOrPush(v, m, a.body(), false);
@@ -422,7 +424,7 @@ public final class Vehicles {
     }
 
     private boolean seatedAnywhere(Actor a) {
-        Vehicle v = byId(a.vehicleId);
+        Vehicle v = byId(a.seatedVehicleId());
         return v != null && v.seatOf(a.id) >= 0;
     }
 
@@ -802,6 +804,7 @@ public final class Vehicles {
         swPitch[0] = swPitch[2] = -v.pitch * 0.85f; swRoll[0] = swRoll[2] = -v.roll * 0.85f; swPitch[1] = swRoll[1] = 0;
         swY[0] = swY[1] = swY[2] = 0; swLastY = 0; swLastSpeed = v.speed; swVy = 0;
         v.riders[seat] = Vehicle.PLAYER;
+        if (seat == m.driverSeat) v.driverKilled = false;
         Player p = s.player;
         p.stance = derpcraft.game.Stance.STAND;
         p.flying = false;
@@ -838,7 +841,11 @@ public final class Vehicles {
         Player p = s.player;
         p.setPos(out[0], out[1], out[2]);
         p.eyeHeight = p.prevEyeHeight = savedEye > 0.5f ? savedEye : Player.EYE;
+        s.stats.safeUntil = s.ticks + EXIT_SAFE_TICKS;     // getting out of a moving / rolled car does not hurt for a second
     }
+
+    /** Ticks without any damage after getting out of a vehicle (the player and NPCs). */
+    public static final int EXIT_SAFE_TICKS = 20;
 
     /** A free spot next to a seat (its side of the car, then the other side, then the roof): {x, y, z}. */
     double[] exitPoint(Vehicle v, int seat, float width, float height) {
@@ -888,6 +895,8 @@ public final class Vehicles {
         a.place(o[0], o[1], o[2], v.yaw);
         a.setHome();
         a.grace(80);
+        a.exitGrace(EXIT_SAFE_TICKS);
+        if (a.rideAlong == v.id) a.rideAlong = -1;
     }
 
     // ================================================================== NPCs
@@ -918,6 +927,7 @@ public final class Vehicles {
             }
             v.riders[want] = a.id;
             seat = want;
+            if (want == m.driverSeat) v.driverKilled = false;
             placeRiders(v, m);
             if (d >= 0 && d < v.autoClose.length && v.autoClose[d]) { v.closeTimer[d] = 14; v.autoClose[d] = false; }
         }
@@ -950,6 +960,110 @@ public final class Vehicles {
 
     /** Steers towards a point and keeps a cruising speed; backs out after getting stuck. */
 
+    // ================================================================== NPCs following the player ride along
+    /**
+     * FOLLOW behaviour: when the player sits in a vehicle that stands (or nearly), the NPC walks to a free passenger
+     * seat's door, opens it and gets in; it stays in while the player is in this vehicle or near it, and gets out (door
+     * opens) only when the player is farther than its follow distance. Returns true while it does that (the AI does
+     * nothing else this tick), false = ordinary following.
+     */
+    public boolean npcFollow(Actor a) {
+        Vehicle cur = a.rideAlong >= 0 ? byId(a.rideAlong) : null;
+        if (cur != null) {
+            int seat = cur.seatOf(a.id);
+            VehicleModel cm = cur.vm();
+            if (seat < 0 || cm == null) { a.rideAlong = -1; return false; }
+            if (cur.wrecked) { eject(cur, seat); return false; }
+            if (playerVehicle == cur || a.waiting) return true;               // rides along / waits in the car
+            Player p = s.player;
+            double dx = p.x - a.x(), dz = p.z - a.z();
+            if (dx * dx + dz * dz <= a.followStart * a.followStart || Math.abs(cur.speed) > 0.05f) return true;
+            // the player walked away: the door opens, it gets out and follows
+            int d = seat < cm.seatDoor.length ? cm.seatDoor[seat] : -1;
+            if (d >= 0 && d < cur.open.length && cur.open[d] < 0.9f) {
+                if (!cur.openTarget[d]) { cur.openTarget[d] = true; cur.autoClose[d] = true; }
+                return true;
+            }
+            eject(cur, seat);
+            if (d >= 0 && d < cur.closeTimer.length) { cur.closeTimer[d] = 14; cur.autoClose[d] = false; }
+            return true;
+        }
+        Vehicle v = playerVehicle;
+        VehicleModel m = v == null ? null : v.vm();
+        if (m == null || v.wrecked || a.waiting || Math.abs(v.speed) > 0.08f) return false;
+        double d2 = v.distSq(a.x(), a.z());
+        if (d2 > 40 * 40) return false;
+        // the free passenger seat nearest to the NPC
+        int want = -1;
+        double bd = Double.MAX_VALUE;
+        double[] door3 = null;
+        for (int i = 0; i < m.seats.size() && i < v.riders.length; i++) {
+            if (i == m.driverSeat || v.riders[i] != Vehicle.NONE) continue;
+            double[] o = exitPoint(v, i, 0.6f, 1.8f);
+            double dd = (o[0] - a.x()) * (o[0] - a.x()) + (o[2] - a.z()) * (o[2] - a.z());
+            if (dd < bd) { bd = dd; want = i; door3 = o; }
+        }
+        if (want < 0) return false;                            // no room: it just follows
+        if (bd > 0.8 * 0.8) return a.walkTo(door3[0], door3[1], door3[2], bd > 8 * 8);
+        int d = want < m.seatDoor.length ? m.seatDoor[want] : -1;
+        if (d >= 0 && d < v.open.length && v.open[d] < 0.9f) {
+            if (!v.openTarget[d]) { v.openTarget[d] = true; v.autoClose[d] = true; }
+            a.lookAt(v.x, v.z);
+            return true;
+        }
+        v.riders[want] = a.id;
+        a.rideAlong = v.id;
+        placeRiders(v, m);
+        if (d >= 0 && d < v.autoClose.length && v.autoClose[d]) { v.closeTimer[d] = 14; v.autoClose[d] = false; }
+        return true;
+    }
+
+    /** The vehicle an NPC sits in (driving, riding along, or put there by a take), or null. */
+    public Vehicle seatedIn(Actor a) {
+        Vehicle v = byId(a.seatedVehicleId());
+        if (v != null && v.seatOf(a.id) >= 0) return v;
+        long[] ts = takeSeats.get(a.id);
+        return ts == null ? null : byId((int) ts[0]);
+    }
+
+    // ================================================================== bullets
+    /** A vehicle part a bullet meets: where along the ray, and whether the part stops it. */
+    public record BulletHit(Vehicle v, VehicleModel.Part part, double t, boolean stops) {}
+
+    /**
+     * The parts of vehicles a bullet ray meets before 'max' (nearest first; one entry per part), except those of 'skip'
+     * (the shooter's own vehicle). Which parts stop bullets is set on the editor's Bullets page.
+     */
+    public List<BulletHit> bulletHits(double ox, double oy, double oz, double dx, double dy, double dz, double max, Vehicle skip) {
+        List<BulletHit> out = new ArrayList<>();
+        double[] lo = new double[3], ld = new double[3];
+        for (Vehicle v : list) {
+            if (v == skip) continue;
+            VehicleModel m = v.vm();
+            if (m == null) continue;
+            double r = Math.max(Math.hypot(Math.max(-m.minX, m.maxX), Math.max(-m.minZ, m.maxZ)), m.maxY) + 1.5;
+            double cx = v.x - ox, cy = v.y + m.maxY / 2 - oy, cz = v.z - oz;
+            double along = cx * dx + cy * dy + cz * dz;
+            double perp2 = cx * cx + cy * cy + cz * cz - along * along;
+            if (perp2 > r * r || along < -r || along > max + r) continue;
+            v.toLocal(ox, oy, oz, lo);
+            v.localDir(dx, dy, dz, ld);
+            VehicleType type = v.type();
+            for (VehicleModel.Part p : m.parts) {
+                Mat4 inv = v.partAnim(m, p, 1).inverted();
+                float[] o4 = new float[4], d4 = new float[4];
+                inv.transform((float) lo[0], (float) lo[1], (float) lo[2], o4);
+                inv.transform((float) (lo[0] + ld[0]), (float) (lo[1] + ld[1]), (float) (lo[2] + ld[2]), d4);
+                float rdx = d4[0] - o4[0], rdy = d4[1] - o4[1], rdz = d4[2] - o4[2];
+                if (!rayBox(o4[0], o4[1], o4[2], rdx, rdy, rdz, p.x0 - 0.01, p.y0 - 0.01, p.z0 - 0.01, p.x1 + 0.01, p.y1 + 0.01, p.z1 + 0.01, max)) continue;
+                double t = rayTris(p, o4[0], o4[1], o4[2], rdx, rdy, rdz, max);
+                if (t < max) out.add(new BulletHit(v, p, t, type.stopsBullets(p)));
+            }
+        }
+        out.sort(java.util.Comparator.comparingDouble(BulletHit::t));
+        return out;
+    }
+
     // ================================================================== scene takes
     /** A take frame of an actor in a vehicle: the vehicle goes where the take was recorded (called by the NPC manager). */
     public void replay(Actor a, int vehicleId, int seat, double x, double y, double z, float vyaw, float vpitch, float vroll, float steer, int doors, boolean snap) {
@@ -961,6 +1075,11 @@ public final class Vehicles {
         Vehicle v = byId(vehicleId);
         VehicleModel m = v == null ? null : v.vm();
         if (m == null) return;
+        if (v.driverKilled && !snap) {
+            // the driver died: the car is nobody's now, it rolls on and stops by itself; passengers just sit in it
+            if (seat != m.driverSeat) replayed.add(new Object[]{a, v, seat});
+            return;
+        }
         v.lightsOn = (vflags & 1) != 0;
         v.replaySlip = slip;
         boolean wr = (vflags & 2) != 0;
@@ -1029,6 +1148,24 @@ public final class Vehicles {
     public void repairForScene(int vehicleId) {
         Vehicle v = byId(vehicleId);
         if (v != null && v.wrecked) { v.repair(); v.wreckedByTake = false; }
+        if (v != null) v.driverKilled = false;
+    }
+
+    /**
+     * An actor died. If a take had it at the wheel, the car is left without a driver: it is no longer moved by any take
+     * and rolls out on its own speed. A walk into / out of a car stops.
+     */
+    public void actorDied(Actor a) {
+        long[] ts = takeSeats.remove(a.id);
+        boards.removeIf(b -> b.a == a);
+        Vehicle v = ts == null ? null : byId((int) ts[0]);
+        VehicleModel m = v == null ? null : v.vm();
+        if (m != null && (int) ts[1] == m.driverSeat) {
+            v.driverKilled = true;
+            v.throttle = 0; v.steerIn = 0; v.handbrake = false;
+            v.replayTick = -100;           // physics from the next tick (its speed is the take's last one)
+        }
+        if (a.rideAlong >= 0) { Vehicle c = byId(a.rideAlong); if (c != null) { int st = c.seatOf(a.id); if (st >= 0) c.riders[st] = Vehicle.NONE; } a.rideAlong = -1; }
     }
 
     private static void setDoor(Vehicle v, int door, boolean open) {
@@ -1070,6 +1207,7 @@ public final class Vehicles {
         b.lx = w[0]; b.ly = w[1]; b.lz = w[2];
         setDoor(v, b.door, true);
         boards.add(b);
+        a.exitGrace(BOARD_TICKS + EXIT_SAFE_TICKS);       // no damage while climbing out and a second after
     }
 
     private static double ease(double u) { u = Math.max(0, Math.min(1, u)); return u * u * (3 - 2 * u); }
@@ -1133,6 +1271,7 @@ public final class Vehicles {
                 if (!b.enter) {
                     if (a.mode() == Actor.Mode.AI) a.setHome();
                     a.grace(80);
+                    a.exitGrace(EXIT_SAFE_TICKS);
                     setDoorClose(b);
                 }
                 it.remove();
@@ -1186,7 +1325,7 @@ public final class Vehicles {
 
     /** An NPC sitting in a vehicle is drawn exactly on its seat (and facing the front) between ticks. */
     public void riderPose(Actor a, derpcraft.render.EntityRenderer.PlayerPose p, float partial) {
-        Vehicle v = byId(a.vehicleId);
+        Vehicle v = byId(a.seatedVehicleId());
         int seat = v == null ? -1 : v.seatOf(a.id);
         Board bd = boardOf(a);
         if (bd != null && !bd.enter && bd.t < bd.total * EXIT_SEATED) { v = bd.v; seat = bd.seat; }

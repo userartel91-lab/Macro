@@ -127,7 +127,7 @@ public final class Actor {
     /** The stats as one line for actors.txt. */
     String statsLine() {
         return speed + "," + lookRange + "," + wanderRadius + "," + attackDelay + "," + regen + "," + nameColor + ","
-                + invulnerable + "," + knockback + "," + pushable + "," + takesFallDamage;
+                + invulnerable + "," + knockback + "," + pushable + "," + takesFallDamage + "," + waiting;
     }
 
     void statsFrom(String line) {
@@ -144,6 +144,7 @@ public final class Actor {
             knockback = Boolean.parseBoolean(v[7]);
             pushable = Boolean.parseBoolean(v[8]);
             takesFallDamage = Boolean.parseBoolean(v[9]);
+            waiting = v.length > 10 && Boolean.parseBoolean(v[10]);
         } catch (RuntimeException ignored) {}       // older / damaged line: the rest keeps its defaults
     }
 
@@ -172,6 +173,76 @@ public final class Actor {
     public int vehicleId = -1, vehicleSeat = -1;
     /** DRIVE: the patrol point driven to and the direction along a back-and-forth route. */
     public int driveWp, driveDir = 1;
+    /** FOLLOW: the vehicle it rides along in with the player (-1 = none). */
+    public int rideAlong = -1;
+    /** FOLLOW: told to wait (Tab while looking at it): it stays where it is until Tab again. */
+    public boolean waiting;
+    /** Patrolling a small area because of Tab + 1; Tab gives back the behaviour and patrol points it had before. */
+    public boolean tabPatrol;
+    private Behavior savedBehavior;
+    private final List<double[]> savedWaypoints = new ArrayList<>();
+    private boolean savedLoop;
+    private int savedWait;
+
+    /** The vehicle it sits in by its own AI (driving or riding along with the player), -1 = none. */
+    public int seatedVehicleId() { return rideAlong >= 0 ? rideAlong : vehicleId; }
+
+    /** No damage for this many ticks (getting out of a vehicle). */
+    public void exitGrace(int ticks) { noHurtUntil = Math.max(noHurtUntil, age + ticks); }
+    private long noHurtUntil = -1;
+
+    /** Behaviour and patrol points to save (a Tab + 1 patrol is only for now: the ones it had before are kept). */
+    public Behavior fileBehavior() { return tabPatrol && savedBehavior != null ? savedBehavior : behavior; }
+    public List<double[]> fileWaypoints() { return tabPatrol ? savedWaypoints : waypoints; }
+    public boolean filePatrolLoop() { return tabPatrol ? savedLoop : patrolLoop; }
+    public int filePatrolWait() { return tabPatrol ? savedWait : patrolWait; }
+
+    /**
+     * Tab + 1: patrols a small area around where it stands (4 points 3-6 blocks away, on the ground, in a loop). The
+     * behaviour it had is kept: {@link #endTabPatrol} gives it back.
+     */
+    public void startTabPatrol(World w, Random r) {
+        if (!tabPatrol) {
+            savedBehavior = behavior; savedLoop = patrolLoop; savedWait = patrolWait;
+            savedWaypoints.clear();
+            for (double[] p : waypoints) savedWaypoints.add(p.clone());
+        }
+        tabPatrol = true;
+        waiting = false;
+        waypoints.clear();
+        int by = (int) Math.floor(body.y + 0.01);
+        for (int k = 0; k < 4; k++) {
+            for (int tryNo = 0; tryNo < 8; tryNo++) {
+                double a = (k + r.nextDouble() * 0.7) * Math.PI / 2, rad = 3 + r.nextDouble() * 3;
+                double x = body.x + Math.cos(a) * rad, z = body.z + Math.sin(a) * rad;
+                int bx = (int) Math.floor(x), bz = (int) Math.floor(z);
+                int found = Integer.MIN_VALUE;
+                for (int dy = 0; dy <= 4 && found == Integer.MIN_VALUE; dy++)
+                    for (int sg = -1; sg <= 1; sg += 2) {
+                        int y = by + dy * sg;
+                        if (w.getBlock(bx, y - 1, bz).solid && !w.getBlock(bx, y, bz).solid && !w.getBlock(bx, y + 1, bz).solid) { found = y; break; }
+                    }
+                if (found != Integer.MIN_VALUE) { waypoints.add(new double[]{bx + 0.5, found, bz + 0.5}); break; }
+            }
+        }
+        if (waypoints.isEmpty()) waypoints.add(new double[]{body.x, body.y, body.z});
+        behavior = Behavior.PATROL;
+        patrolLoop = true;
+        patrolWait = 20 + r.nextInt(40);
+        wpIndex = 0;
+        setHome();
+    }
+
+    /** Ends a Tab + 1 patrol: the behaviour and patrol points from before (following the player again, if it was). */
+    public void endTabPatrol() {
+        if (!tabPatrol) return;
+        tabPatrol = false;
+        behavior = savedBehavior == null ? Behavior.FOLLOW : savedBehavior;
+        waypoints.clear();
+        waypoints.addAll(savedWaypoints);
+        patrolLoop = savedLoop; patrolWait = savedWait;
+        wpIndex = 0;
+    }
 
     // ---------------------------------------------------------------- takes: scene name -> track (several takes)
     final Map<String, Track> tracks = new LinkedHashMap<>();
@@ -492,6 +563,11 @@ public final class Actor {
         if (mode == Mode.AI && behavior == Behavior.RIDE && ride(m)) return;
         tickWorld = w;
         if (mode == Mode.AI && behavior == Behavior.DRIVE && m.session().vehicles != null && m.session().vehicles.npcDrive(this)) return;
+        // following the player: gets into the car the player sits in, and out when the player walked away
+        if (mode == Mode.AI && behavior == Behavior.FOLLOW && m.session().vehicles != null
+                && (rideAlong >= 0 || targetActor == null && targetMob == null && !targetPlayer && fleeTicks == 0)
+                && m.session().vehicles.npcFollow(this)) return;
+        if (behavior != Behavior.FOLLOW) waiting = false;
 
         var p = m.player();
         double pdx = p.x - body.x, pdz = p.z - body.z, pd2 = pdx * pdx + pdz * pdz;
@@ -627,6 +703,12 @@ public final class Actor {
                 }
                 case RIDE, DRIVE -> {}
                 case FOLLOW -> {
+                    if (waiting) {          // Tab: stays here until the player comes back and presses Tab again
+                        double hx = homeX - body.x, hz = homeZ - body.z;
+                        following = false;
+                        if (hx * hx + hz * hz > 1.5 * 1.5) moveTo(w, in, homeX, homeY, homeZ, false);
+                        break;
+                    }
                     if (pd2 > 48 * 48) place(p.x - 1, p.y, p.z - 1, body.yaw);
                     if (!following && pd2 > followStart * followStart) following = true;
                     if (following && pd2 < followStop * followStop) following = false;
@@ -758,7 +840,7 @@ public final class Actor {
     public Poses.Def currentPose() {
         if (keyTo != null && !keyTo.isEmpty()) return Poses.get(keyT < 0.5f && keyFrom != null ? keyFrom : keyTo);
         if (mode == Mode.PLAYING || mode == Mode.ON_MARK) return Poses.get(recPose);
-        if (seated && (behavior == Behavior.SEAT || behavior == Behavior.RIDE || behavior == Behavior.DRIVE)) return Poses.get("Sit");
+        if (seated && (behavior == Behavior.SEAT || behavior == Behavior.RIDE || behavior == Behavior.DRIVE || rideAlong >= 0)) return Poses.get("Sit");
         return Poses.get(customPose);
     }
 
@@ -769,7 +851,7 @@ public final class Actor {
         body.width = Math.max(0.2f, Math.min(1.0f, w * scale));     // walking box (wide boxes would get stuck)
         body.height = Math.max(0.3f, h * scale);
         hitW = w * scale; hitH = h * scale;
-        if (behavior != Behavior.SEAT && behavior != Behavior.RIDE && behavior != Behavior.DRIVE) seated = false;
+        if (behavior != Behavior.SEAT && behavior != Behavior.RIDE && behavior != Behavior.DRIVE && rideAlong < 0) seated = false;
     }
 
     float hitW = 0.6f, hitH = 1.8f;
@@ -822,7 +904,8 @@ public final class Actor {
 
     /** The same with its cause ("hit", "fall", "vehicle"...: blood, the fall of the body). */
     public void hurt(NpcManager m, float amount, Actor attacker, boolean byPlayer, derpcraft.entity.Mob mob, String cause) {
-        if (dead() || mode == Mode.PLAYING || mode == Mode.ON_MARK || invulnerable) return;
+        if (dead() || mode == Mode.ON_MARK || invulnerable || age < noHurtUntil) return;
+        boolean playing = mode == Mode.PLAYING;           // an actor in a take: hurt and killed for real, but the take goes on while it lives
         if (byPlayer && faction == Faction.FRIENDLY) return;     // friendly NPCs ignore the player's hits
         var ses = derpcraft.game.Session.current;
         if (ses != null && derpcraft.api.EventBus.has(derpcraft.api.Events.EntityDamage.class)) {
@@ -838,17 +921,20 @@ public final class Actor {
         double ax = byPlayer ? m.player().x : attacker != null ? attacker.body.x : mob != null ? mob.x() : body.x;
         double az = byPlayer ? m.player().z : attacker != null ? attacker.body.z : mob != null ? mob.z() : body.z;
         double kx = body.x - ax, kz = body.z - az, kl = Math.sqrt(kx * kx + kz * kz) + 1e-6;
-        if (knockback) {
+        if (knockback && !playing) {
             body.mx += kx / kl * 0.4; body.mz += kz / kl * 0.4;
             if (body.onGround) body.my = 0.36;
         }
         if (health <= 0) {
+            if (ses != null && ses.vehicles != null) ses.vehicles.actorDied(this);     // a driver killed in a scene: the car rolls out driverless
+            if (playing) toAI();                                                      // out of the take: the body falls where it was
             health = 0; deathTime = 1; respawnTimer = 0; targetActor = null; targetMob = null; targetPlayer = false;
             startRagdoll(ax, az);
             if (ses != null && derpcraft.api.EventBus.has(derpcraft.api.Events.EntityDeath.class))
                 derpcraft.api.EventBus.post(ses, new derpcraft.api.Events.EntityDeath(null, name, byPlayer, new java.util.ArrayList<>(), 0));
             return;
         }
+        if (playing) return;                  // a take goes on: no reaction until it is over
         // reaction
         boolean flee = faction == Faction.FRIENDLY && guard != Guard.DEFEND || faction == Faction.NEUTRAL && onHit == OnHit.FLEE;
         if (flee) { fleeTicks = 100; fleeFromX = ax; fleeFromZ = az; }

@@ -77,6 +77,14 @@ public final class VehicleType {
     /** Opening angles (doors 70, hood 60, trunk 65) and per part overrides: name -> angle (negative = the other way). */
     public float doorAngle = 70, hoodAngle = 60, trunkAngle = 65;
     public final Map<String, Float> angles = new HashMap<>();
+    /** Per part (lower case name): true = stops bullets, false = bullets go through it. Parts not in it: wheels stop, the rest let bullets through. */
+    public final Map<String, Boolean> bullets = new HashMap<>();
+
+    /** Whether a part of the model stops bullets (the editor's Bullets page). */
+    public boolean stopsBullets(VehicleModel.Part p) {
+        Boolean b = bullets.get(p.name.toLowerCase(Locale.ROOT));
+        return b != null ? b : p.role == VehicleModel.WHEEL;
+    }
     /** Per part pivots in blocks in the car's own coordinates (origin between the axles on the ground; /vehicle info and the check tool print them): name -> {x, y, z}. */
     public final Map<String, float[]> pivots = new HashMap<>();
     /** Group / object names that are really another part: "bag" -> "trunk", "kapot" -> "hood". */
@@ -234,6 +242,7 @@ public final class VehicleType {
             Map<String, Object> pc = Json.obj(e.getValue());
             String k = e.getKey().toLowerCase(Locale.ROOT);
             if (pc.containsKey("angle")) angles.put(k, num(pc, "angle", 70));
+            if (pc.get("stopsBullets") instanceof Boolean sb) bullets.put(k, sb);
             List<Object> pv = Json.arr(pc.get("pivot"));
             if (pv.size() >= 3) pivots.put(k, new float[]{(float) Json.num(pv.get(0), 0), (float) Json.num(pv.get(1), 0), (float) Json.num(pv.get(2), 0)});
         }
@@ -402,14 +411,24 @@ public final class VehicleType {
         for (float[] e : eyes) if (e != null) anyEye = true;
         if (anyEye) { List<Object> el = new ArrayList<>(); for (float[] e : eyes) el.add(e == null ? null : point(e)); root.put("eyes", el); } else root.remove("eyes");
         if (blocksSet) root.put("blocks", points(blocks)); else root.remove("blocks");
-        if (!pivots.isEmpty()) {
+        {
             Map<String, Object> parts = new LinkedHashMap<>(Json.obj(root.get("parts")));
             for (var e : pivots.entrySet()) {
                 Map<String, Object> pc = new LinkedHashMap<>(Json.obj(parts.get(e.getKey())));
                 pc.put("pivot", point(e.getValue()));
                 parts.put(e.getKey(), pc);
             }
-            root.put("parts", parts);
+            // bullets: only what differs from the default is written (and a part back on its default loses the key)
+            for (var e : new ArrayList<>(parts.entrySet())) {
+                Map<String, Object> pc = new LinkedHashMap<>(Json.obj(e.getValue()));
+                if (pc.remove("stopsBullets") != null) { if (pc.isEmpty()) parts.remove(e.getKey()); else parts.put(e.getKey(), pc); }
+            }
+            for (var e : bullets.entrySet()) {
+                Map<String, Object> pc = new LinkedHashMap<>(Json.obj(parts.get(e.getKey())));
+                pc.put("stopsBullets", e.getValue());
+                parts.put(e.getKey(), pc);
+            }
+            if (!parts.isEmpty()) root.put("parts", parts); else root.remove("parts");
         }
         StringBuilder sb = new StringBuilder();
         write(sb, root, 0);

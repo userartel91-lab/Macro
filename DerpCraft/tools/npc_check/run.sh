@@ -4,8 +4,10 @@
 # restored -> back after the play, "To start". Also screenshots of every NPC Hub page. Uses tools/smoke_check/SmokeMain.java.
 # Screenshots: /tmp/dc_npc/shots, log: /tmp/dc_npc/smoke.log ("[smoke] CHECK ..." lines: OK / FAIL).
 # Usage (from the DerpCraft folder):  sh tools/npc_check/run.sh [seconds, default 600]
+# Vehicles + NPCs (riding along, Tab, a driver killed in a scene, bullets through cars, a second without damage after getting out):
+#   SCENARIO=tools/npc_check/vehicles/Scenario.java OUT=/tmp/dc_npcv sh tools/npc_check/run.sh
 cd "$(dirname "$0")/../.." || exit 1
-L=/tmp/dc_libs; T=/tmp/dc_npc
+L=/tmp/dc_libs; T=${OUT:-/tmp/dc_npc}
 mkdir -p "$L"
 get() {
   f="$L/$(basename "$1")"; [ -s "$f" ] && return 0
@@ -20,7 +22,7 @@ rm -rf "$T" && mkdir -p "$T/out" "$T/tool" "$T/game" "$T/shots"
 find src/main/java -name '*.java' > "$T/srcs.txt"
 javac -nowarn -encoding UTF-8 --release 21 -cp "$CP" -d "$T/out" @"$T/srcs.txt" 2>&1 | grep -v "^Picked up\|^Note:"
 cp -r src/main/resources/. "$T/out/"
-javac -nowarn -encoding UTF-8 --release 21 -cp "$T/out:$CP" -d "$T/tool" tools/smoke_check/SmokeMain.java tools/npc_check/Scenario.java 2>&1 | grep -v "^Picked up\|^Note:"
+javac -nowarn -encoding UTF-8 --release 21 -cp "$T/out:$CP" -d "$T/tool" tools/smoke_check/SmokeMain.java ${SCENARIO:-tools/npc_check/Scenario.java} 2>&1 | grep -v "^Picked up\|^Note:"
 export LIBGL_ALWAYS_SOFTWARE=1 MESA_GL_VERSION_OVERRIDE=4.6 MESA_GLSL_VERSION_OVERRIDE=460 MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
 timeout "${1:-600}" xvfb-run -a -s "-screen 0 1280x720x24 +extension GLX" java -Xmx3G -Dderpcraft.dir="$T/game" --enable-native-access=ALL-UNNAMED -cp "$T/tool:$T/out:$CP" SmokeMain "$T/game" > "$T/smoke.log" 2>&1
 echo "exit $?"

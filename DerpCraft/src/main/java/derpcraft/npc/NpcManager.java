@@ -1508,7 +1508,7 @@ public final class NpcManager {
             ids.append(a.id);
             p.setProperty(k + "name", a.name);
             p.setProperty(k + "skin", a.skin);
-            p.setProperty(k + "behavior", a.behavior.name());
+            p.setProperty(k + "behavior", a.fileBehavior().name());
             p.setProperty(k + "pose", a.pose.name());
             p.setProperty(k + "held", a.held == null ? "" : a.held.item.name);
             p.setProperty(k + "showName", String.valueOf(a.showName));
@@ -1529,8 +1529,8 @@ public final class NpcManager {
             for (int i = 0; i < 4; i++) { if (i > 0) ar.append(','); ar.append(a.armor[i] == null ? "" : a.armor[i].item.name); }
             p.setProperty(k + "armor", ar.toString());
             StringBuilder wp = new StringBuilder();
-            for (double[] w : a.waypoints) { if (wp.length() > 0) wp.append(';'); wp.append(w[0]).append(',').append(w[1]).append(',').append(w[2]); }
-            p.setProperty(k + "patrol", a.patrolLoop + "|" + a.patrolWait + "|" + wp);
+            for (double[] w : a.fileWaypoints()) { if (wp.length() > 0) wp.append(';'); wp.append(w[0]).append(',').append(w[1]).append(',').append(w[2]); }
+            p.setProperty(k + "patrol", a.filePatrolLoop() + "|" + a.filePatrolWait() + "|" + wp);
             p.setProperty(k + "seat", a.seat == null ? "" : a.seat[0] + "," + a.seat[1] + "," + a.seat[2]);
             p.setProperty(k + "watch", a.watchId + "|" + a.rideId + "|" + a.rideCreature);
             p.setProperty(k + "vehicle", a.vehicleId + "|" + a.vehicleSeat);
