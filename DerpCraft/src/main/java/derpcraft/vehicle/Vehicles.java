@@ -348,7 +348,8 @@ public final class Vehicles {
     /** People standing on the car ride along; people in its way are pushed aside. */
     private void carryAndPush(Vehicle v, VehicleModel m) {
         Player p = s.player;
-        if (playerVehicle != v && !s.spectator()) carryOrPush(v, m, p, true);
+        double jx = v.x - v.px, jz = v.z - v.pz;
+        if (playerVehicle != v && !s.spectator() && jx * jx + jz * jz <= TELEPORT * TELEPORT) carryOrPush(v, m, p, true);
         moved.add(v);
     }
 
@@ -365,7 +366,9 @@ public final class Vehicles {
             VehicleModel m = v.vm();
             if (m == null) continue;
             for (Actor a : s.npcs.actors) {
-                if (a.seatedVehicleId() == v.id && v.seatOf(a.id) >= 0 || seatedAnywhere(a)) continue;
+                if (a.seatedVehicleId() == v.id && v.seatOf(a.id) >= 0 || seatedAnywhere(a) || takeSeats.containsKey(a.id)) continue;
+                double jx = v.x - v.px, jz = v.z - v.pz;
+                if (jx * jx + jz * jz > TELEPORT * TELEPORT) continue;      // put somewhere by a scene (start, reset): not a ride
                 if (a.dead()) { pushBody(v, m, a); continue; }
                 if (!a.inGrace() && runOver(v, m, a)) continue;                  // hit hard: thrown, no gentle push
                 if (a.mode() == Actor.Mode.AI) carryOrPush(v, m, a.body(), false);
@@ -373,6 +376,9 @@ public final class Vehicles {
         }
         moved.clear();
     }
+
+    /** A car that moved more than this in one tick was put there (a scene starting again), it did not drive into anyone. */
+    static final double TELEPORT = 2.5;
 
     /** Below this speed (blocks per tick: about 9 km/h) a car only pushes people aside. */
     public static float HIT_SPEED = 0.12f;
@@ -1223,6 +1229,32 @@ public final class Vehicles {
         a.exitGrace(BOARD_TICKS + EXIT_SAFE_TICKS);       // no damage while climbing out and a second after
     }
 
+    /**
+     * Actors in takes get into and out of cars at once, like the player (true = the old walk to / from the door with the
+     * door opening, which looked crooked).
+     */
+    public static boolean walkInOut = false;
+
+    /**
+     * A take stopped putting the actor into a seat. Still in the take: its frame already put it where the player got out.
+     * The take is over (or the scene stopped) while it sat: it is put beside its seat at once, like the player getting out.
+     */
+    private void exitAtOnce(Actor a, Vehicle v, int seat) {
+        VehicleModel m = v.vm();
+        if (m == null || seat < 0 || seat >= m.seats.size()) return;
+        a.exitGrace(EXIT_SAFE_TICKS);
+        if (a.mode() == Actor.Mode.PLAYING) return;
+        double[] w = new double[3];
+        float[] st = m.seats.get(seat);
+        v.bodyPointAt(m, st[0], st[1] + SIT_DROP, st[2], 1, w);
+        double dx = a.x() - w[0], dz = a.z() - w[2];
+        if (dx * dx + dz * dz > 2.5 * 2.5) return;                      // it was taken somewhere else (scene reset)
+        double[] o = exitPoint(v, seat, 0.6f, 1.8f);
+        a.place(o[0], o[1], o[2], seatFacing(v, m, seat, v.yaw));
+        if (a.mode() == Actor.Mode.AI) a.setHome();
+        a.grace(80);
+    }
+
     private static double ease(double u) { u = Math.max(0, Math.min(1, u)); return u * u * (3 - 2 * u); }
 
     /** Every tick after the NPCs: the walks into and out of cars (they override what the take or the AI did this tick). */
@@ -1236,7 +1268,8 @@ public final class Vehicles {
             Actor a = s.npcs.byId(e.getKey());
             Vehicle v = byId((int) ts[0]);
             if (a == null || v == null || v.wrecked || a.dead() || !s.npcs.inWorld(a) || s.npcs.previewing(a)) continue;
-            beginExit(a, v, (int) ts[1]);
+            if (walkInOut) beginExit(a, v, (int) ts[1]);
+            else exitAtOnce(a, v, (int) ts[1]);
         }
         double[] w = new double[3];
         for (var it = boards.iterator(); it.hasNext(); ) {

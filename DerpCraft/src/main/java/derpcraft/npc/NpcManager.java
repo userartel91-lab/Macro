@@ -905,8 +905,9 @@ public final class NpcManager {
         Recording.Frame raw = tk.rec.frame(src);
         boolean swing = src != a.lastSrc && raw != null && (raw.flags & Recording.FLAG_SWING) != 0;
         a.lastSrc = src;
-        // the take is about to put the actor into a car: it walks to the door, opens it and gets in
-        if (f.vehicle < 0 && s.vehicles != null && !s.vehicles.boarding(a)) {
+        // the take is about to put the actor into a car: like the player, it is in the seat at once (the old walk to the
+        // door is still there behind Vehicles.walkInOut)
+        if (derpcraft.vehicle.Vehicles.walkInOut && f.vehicle < 0 && s.vehicles != null && !s.vehicles.boarding(a)) {
             int lead = 0, max = derpcraft.vehicle.Vehicles.BOARD_TICKS;
             if (tick == tk.offset) { for (int j = 1; j <= max; j++) if (tk.frame(tick + j).vehicle >= 0) { lead = j; break; } }
             else if (tk.frame(tick + max).vehicle >= 0 && tk.frame(tick + max - 1).vehicle < 0) lead = max;

@@ -252,6 +252,16 @@ public class Scenario {
             SmokeMain.shot("v07_car_stopped");
             N().stopScene();
         });
+        // ---- getting in / out in a take: at once, like the player (no walk to the door)
+        SmokeMain.wait(5, () -> check("scene plays again", N().playScene(drv.group), ""));
+        SmokeMain.wait(2, () -> check("actor in the seat at once (not run over by its own car)", !drv.dead() && S().vehicles.seatedIn(drv) != null && !S().vehicles.boarding(drv) && !S().vehicles.boarding(ann), ""));
+        SmokeMain.step(() -> !N().scenePlaying(drv.group), 300, () -> {});
+        SmokeMain.wait(2, () -> {
+            double d = Math.hypot(drv.x() - car.x, drv.z() - car.z);
+            check("actor out at once after the take", S().vehicles.seatedIn(drv) == null && !S().vehicles.boarding(drv) && d < 3.5,
+                    String.format(Locale.ROOT, "%.1f from the car, ann %.1f", d, Math.hypot(ann.x() - car.x, ann.z() - car.z)));
+            SmokeMain.shot("v09_out_at_once");
+        });
         // ---- the vehicle editor's Bullets page (door2 set to stop, picked)
         SmokeMain.wait(5, () -> {
             car.type().bullets.put("door2", true);
