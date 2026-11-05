@@ -923,7 +923,9 @@ public final class Vehicle {
         double nx = sx - o[0], ny = sy - o[1], nz = sz - o[2];
         // speed from the movement along the front (for the wheels and for coasting on after the take)
         double mv = (nx - x) * fx(vyaw) + (nz - z) * fz(vyaw);
-        if (Math.abs(mv) < 3) speed = (float) mv;
+        // the speed from where the car was at the start of the tick: a passenger's take may have placed it already this tick
+        double sp = (nx - px) * fx(vyaw) + (nz - pz) * fz(vyaw);
+        if (Math.abs(sp) < 3) speed = (float) sp;
         spin -= (float) mv / m.wheelRadius;
         x = nx; y = gy = ny; z = nz; yVel = 0;
         yaw = vyaw; pitch = vpitch; roll = vroll;

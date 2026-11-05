@@ -46,6 +46,11 @@ public final class NpcManager {
      * other actors and of NPC AIs are never recorded.
      */
     public boolean recordWorld = true;
+    /**
+     * While a take is recorded, the other NPCs of the same scene (group) that live by their AI (following you, guards,
+     * patrols, drivers...) get takes of their own, recorded alongside; NPCs of other scenes are never recorded into it.
+     */
+    public boolean recordAi = true;
     /** Record "as the NPC": you start where the NPC stands, wear its skin while acting, and go back to your place afterwards. */
     public boolean recordAsNpc;
     /** Groups (lower case) whose scenes leave no trace: after a play the changed blocks come back as they were before it. */
@@ -1018,6 +1023,88 @@ public final class NpcManager {
         double l = Math.sqrt(dx * dx + aimY * aimY + dz * dz) + 1e-6;
         var p = s.mobs.shoot(it.npcProjectile, ex + dx / dist * 0.4, ey - 0.1, ez + dz / dist * 0.4, dx / l, aimY / l, dz / l, speed, false, null);
         if (p != null) p.ownerNpc = a;
+        aiAction(a, 2, it.npcProjectile, Math.round(speed * 100), dx / l, aimY / l, dz / l);
+    }
+
+    // ---------------------------------------------------------------- the scene's AI NPCs recorded with the take
+    /** NPCs of the recorded scene living by their AI, and their takes being recorded (frames, actions, blocks). */
+    private final Map<Actor, Recording> aiTakes = new LinkedHashMap<>();
+    /** The AI NPC ticking right now (its block changes go into its own take). */
+    private Actor aiActing;
+
+    /** How many NPCs of the scene are recorded along with the take (HUD). */
+    public int aiRecorded() { return aiTakes.size(); }
+
+    /** Picks the NPCs of the scene recorded along with the take: same group, in the scene, living by their AI, no take there yet. */
+    private void startAiTakes() {
+        aiTakes.clear();
+        if (!recordAi) return;
+        for (Actor o : actors) {
+            if (o == recordingActor || recCast.contains(o) || !o.group.equalsIgnoreCase(recScene) || !o.sceneEnabled) continue;
+            if (o.mode != Actor.Mode.AI || o.dead() || o.take(recScene) != null) continue;
+            aiTakes.put(o, new Recording());
+        }
+    }
+
+    /** Something an AI NPC did that its take replays (a shot, a reload, a throw, a hit). Called by the actor. */
+    void aiAction(Actor a, int kind, String item, int count, double dx, double dy, double dz) {
+        Recording r = takeStarted && take != null ? aiTakes.get(a) : null;
+        if (r != null) r.items.add(new Recording.ItemAction(r.length(), kind, item, count, a.x(), a.y(), a.z(), dx, dy, dz));
+    }
+
+    /** One frame of every recorded AI NPC, after they moved this tick. An NPC that died or left the world ends its take there. */
+    private void captureAi() {
+        if (aiTakes.isEmpty() || take == null || !takeStarted) return;
+        for (var e : aiTakes.entrySet()) {
+            Actor a = e.getKey();
+            Recording r = e.getValue();
+            // one frame for each frame of the player's take (none in the tick the take begins); a missed one = it ended (dead, switched off)
+            if (r.frames.size() != recTick - recStart - 1) continue;
+            if (a.dead() || !actors.contains(a) || a.mode != Actor.Mode.AI) continue;
+            Recording.Frame f = new Recording.Frame();
+            f.x = a.x(); f.y = a.y(); f.z = a.z();
+            f.yaw = a.headYaw(); f.pitch = a.body.pitch;
+            var pp = a.pose(1, skins);
+            int flags = 0;
+            if (pp.sneaking) flags |= Recording.FLAG_SNEAK;
+            if (pp.sitting) flags |= Recording.FLAG_SIT;
+            if (pp.waving) flags |= Recording.FLAG_WAVE;
+            if (a.body.flying) flags |= Recording.FLAG_FLYING;
+            if (a.body.onGround) flags |= Recording.FLAG_GROUND;
+            if (a.swingStartedNow()) flags |= Recording.FLAG_SWING;
+            if (pp.hurt > 0 && !a.dead()) flags |= Recording.FLAG_HURT;
+            float[] vs = s.vehicles == null ? null : s.vehicles.seatState(a);
+            if (vs != null) {
+                flags |= Recording.FLAG_SIT;
+                f.vehicle = (int) vs[0]; f.seat = (int) vs[1]; f.vyaw = vs[2]; f.vpitch = vs[3]; f.vroll = vs[4]; f.steer = vs[5]; f.doors = (int) vs[6]; f.vflip = vs[7]; f.vslip = vs[8]; f.vflags = (int) vs[9];
+            }
+            f.flags = flags;
+            f.held = pp.held == null ? "" : pp.held.item.name;
+            f.pose = vs != null ? "" : a.customPose;
+            f.emotion = a.emotion;
+            r.frames.add(f);
+        }
+    }
+
+    /** The take was kept: each recorded AI NPC gets its take in the scene (starting where the take started). Returns how many. */
+    private int keepAiTakes() {
+        int n = 0;
+        for (var e : aiTakes.entrySet()) {
+            Actor a = e.getKey();
+            Recording r = e.getValue();
+            if (r.length() < 2) continue;
+            r.clampTicks();
+            String file = takeFile(a, recScene);
+            try { r.save(dir.resolve("recordings").resolve(file)); } catch (IOException ex) { s.chat("§cCould not save the take of " + a.name + ": " + ex.getMessage()); continue; }
+            Track.Take tk = new Track.Take(r, file);
+            tk.offset = recStart;
+            Track tr = a.trackOrNew(recScene);
+            tr.takes.add(tk);
+            tr.active = tr.takes.size() - 1;
+            n++;
+        }
+        aiTakes.clear();
+        return n;
     }
 
     /** Line of sight between two points (no opaque block in between). */
@@ -1165,7 +1252,11 @@ public final class NpcManager {
         takeStarted = true;
         recTick = recStart;
         for (Actor o : recCast) o.mode = othersPlayWhileRecording ? Actor.Mode.PLAYING : Actor.Mode.ON_MARK;
+        startAiTakes();
     }
+
+    /** NPCs recorded along with the last kept take (for the message). */
+    public int lastAiKept;
 
     /** Stops and keeps the take (a new take of the actor's track in the current scene). Returns the actor, whose take(scene) is null if nothing was kept. */
     public Actor stopRecording() {
@@ -1173,8 +1264,10 @@ public final class NpcManager {
         if (a == null) return null;
         recordingActor = null;
         recNewActor = null;
+        lastAiKept = 0;
         if (!takeStarted || take.length() < 2) {
             take = null;
+            aiTakes.clear();
             finishRecordingCast(a);
             endRecSnapshot(false);
             Track t = a.track(recScene);
@@ -1191,6 +1284,7 @@ public final class NpcManager {
         tr.active = tr.takes.size() - 1;
         Recording.Frame last = take.frame(take.length() - 1);
         a.place(last.x, last.y, last.z, last.yaw);
+        lastAiKept = keepAiTakes();
         take = null;
         recTake = null;
         finishRecordingCast(a);
@@ -1242,6 +1336,7 @@ public final class NpcManager {
         Recording r = take;
         take = null;
         recTake = null;
+        aiTakes.clear();
         // the world as it was before the take (also what the scene's other actors changed while it ran)
         WorldSnapshot w = recSnap;
         recSnap = null;
@@ -1308,6 +1403,11 @@ public final class NpcManager {
             if (recSnap != null) rememberState(recSnap, x, y, z, before);
         }
         if (take == null || !takeStarted || !recordBlocks) return;
+        if (aiActing != null) {            // a recorded AI NPC opened a door, broke a block...: its own take
+            Recording ar = aiTakes.get(aiActing);
+            if (ar != null) ar.blocks.add(new Recording.BlockAction(ar.length(), x, y, z, before, after));
+            return;
+        }
         boolean byPlayer = playerActing;
         // what the player set off (explosions, fire, water, falling sand, doors and redstone...) near them, not what NPCs did
         if (!byPlayer && recordWorld && !npcTicking) {
@@ -1407,13 +1507,17 @@ public final class NpcManager {
         for (Actor a : actors) {
             if (a == recordingActor) { a.hold(); continue; }
             switch (a.mode) {
-                case AI, GOTO_MARK -> a.tickAI(this, random);
+                case AI, GOTO_MARK -> {
+                    aiActing = aiTakes.containsKey(a) ? a : null;
+                    try { a.tickAI(this, random); } finally { aiActing = null; }
+                }
                 case ON_MARK -> { a.hold(); a.body.yaw = a.markYaw; }
                 default -> {}
             }
         }
         separate();
         if (s.vehicles != null) s.vehicles.afterNpcs();
+        captureAi();
     }
 
     private void separate() {
@@ -1490,6 +1594,7 @@ public final class NpcManager {
         p.setProperty("countdown", String.valueOf(countdownSeconds));
         p.setProperty("recordWorld", String.valueOf(recordWorld));
         p.setProperty("recordAsNpc", String.valueOf(recordAsNpc));
+        p.setProperty("recordAi", String.valueOf(recordAi));
         p.setProperty("currentScene", currentScene);
         StringBuilder rel = new StringBuilder();
         for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) rel.append(attacks[i][j] ? '1' : '0');
@@ -1589,6 +1694,7 @@ public final class NpcManager {
         countdownSeconds = (int) num(p.getProperty("countdown"), 3);
         recordWorld = Boolean.parseBoolean(p.getProperty("recordWorld", "true"));
         recordAsNpc = Boolean.parseBoolean(p.getProperty("recordAsNpc", "false"));
+        recordAi = Boolean.parseBoolean(p.getProperty("recordAi", "true"));
         currentScene = p.getProperty("currentScene", "main");
         for (int gi = 0; p.getProperty("group" + gi + ".name") != null; gi++) {
             String g = p.getProperty("group" + gi + ".name");

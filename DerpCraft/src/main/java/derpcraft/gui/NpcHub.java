@@ -330,6 +330,13 @@ public final class NpcHub extends Screen {
         wb.active = n.recordBlocks;
         y += 18;
         add(new Widget.Button(x, y, w, 16, () -> "Chat lines: " + onOff(n.recordChat), () -> { n.recordChat = !n.recordChat; n.save(); }));
+        y += 18;
+        add(new Widget.Button(x, y, w, 16, () -> "Scene's NPCs with AI: " + (n.recordAi ? "§arecorded" : "§7not"), () -> {
+            n.recordAi = !n.recordAi;
+            n.save();
+            flash(n.recordAi ? "NPCs of this scene that live by their AI (following you, guards...) get their own takes with yours"
+                    : "Only the actor you play is recorded");
+        }));
     }
 
     private void teamsPage(int x, int y, int w) {
@@ -858,6 +865,7 @@ public final class NpcHub extends Screen {
                     "blocks, doors, items picked up and", "dropped, shots, reloads, throws, hits", "on NPCs and creatures, fist fights,",
                     "getting hurt, gestures and faces.", "+ world: also explosions, fire, water", "  you set off (48 blocks around you).",
                     "As the NPC: you start in its place", "  and skin, and come back after.",
+                    "Scene's NPCs with AI: the other NPCs", "  of this scene (following you, guards,", "  drivers) get takes too. Other scenes'", "  NPCs are never recorded into it.",
                     "Keys: " + Keys.n(Keys.RECORD) + " record / stop, " + Keys.n(Keys.RECORD_CANCEL) + " cancel,",
                     Keys.n(Keys.GESTURE) + "+1..9 gesture, " + Keys.n(Keys.FACE) + "+1..7 face."};
             helpBox(g, help, 24, 0xD0D0D0);

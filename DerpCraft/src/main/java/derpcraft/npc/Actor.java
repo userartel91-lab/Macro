@@ -533,6 +533,12 @@ public final class Actor {
         if (f != null) { body.pitch = f.pitch; applyFlags(f); }
     }
 
+    /** Whether the arm swing started in this tick (a recording of its AI marks the frame). */
+    boolean swingStartedNow() { return swingTicks == 0; }
+
+    /** Where the head looks (yaw). */
+    float headYaw() { return headYaw; }
+
     /** Swings the arm (throwing, shooting). */
     public void swing() { swingTicks = -1; }
 
@@ -562,11 +568,11 @@ public final class Actor {
         applyHitbox();
         if (mode == Mode.AI && behavior == Behavior.RIDE && ride(m)) return;
         tickWorld = w;
-        if (mode == Mode.AI && behavior == Behavior.DRIVE && m.session().vehicles != null && m.session().vehicles.npcDrive(this)) return;
+        if (mode == Mode.AI && behavior == Behavior.DRIVE && m.session().vehicles != null && m.session().vehicles.npcDrive(this)) { seatedFight(m, r); return; }
         // following the player: gets into the car the player sits in, and out when the player walked away
         if (mode == Mode.AI && behavior == Behavior.FOLLOW && m.session().vehicles != null
                 && (rideAlong >= 0 || targetActor == null && targetMob == null && !targetPlayer && fleeTicks == 0)
-                && m.session().vehicles.npcFollow(this)) return;
+                && m.session().vehicles.npcFollow(this)) { seatedFight(m, r); return; }
         if (behavior != Behavior.FOLLOW) waiting = false;
 
         var p = m.player();
@@ -620,8 +626,8 @@ public final class Actor {
                 swingTicks = -1;
                 float dmg = damage > 0 ? damage : (held != null ? Math.max(1, held.item.attackDamage) : 1);
                 if (targetPlayer) m.hitPlayer(this, dmg);
-                else if (targetActor != null) targetActor.hurt(m, dmg, this, false);
-                else targetMob.hurt(dmg, "npc", false, null, this, body.x, body.z);
+                else if (targetActor != null) { m.aiAction(this, 6, "npc:" + targetActor.id, Math.round(dmg * 10), 0, 0, 0); targetActor.hurt(m, dmg, this, false); }
+                else { m.aiAction(this, 6, "mob:" + targetMob.type.id, Math.round(dmg * 10), 0, 0, 0); targetMob.hurt(dmg, "npc", false, null, this, body.x, body.z); }
             }
             if (!ranged) {
                 double dy = ty + 1.5 - (body.y + 1.62);
@@ -733,6 +739,58 @@ public final class Actor {
         body.pitch += (lookPitch - body.pitch) * 0.2f;
         if (body.y < -64) place(homeX, homeY, homeZ, homeYaw);
         animate();
+    }
+
+    /**
+     * In a vehicle seat (driving or riding along) with a gun: it shoots out of the window at its target (the same
+     * targets as on foot: the player when aggressive, attackers of the player as a guard, other factions...). It turns its
+     * head to the target (as far as a neck can from the seat) and fires bursts like on foot, reloads when empty.
+     */
+    private void seatedFight(NpcManager m, Random r) {
+        var vs = m.session().vehicles;
+        var v = vs.seatedIn(this);
+        int seat = v == null ? -1 : v.seatOf(id);
+        if (seat < 0) return;
+        tickGun();
+        derpcraft.gun.GunType gun = derpcraft.gun.Guns.of(held);
+        if (gun == null || gun.model() == null || dead() || !hasTarget(m)) { gunBurst = 0; gunSeen = 0; return; }
+        var p = m.player();
+        double tx, ty, tz, aimY;
+        if (targetPlayer) { tx = p.x; ty = p.y; tz = p.z; aimY = ty + p.height * 0.72; }
+        else if (targetActor != null) { tx = targetActor.body.x; ty = targetActor.body.y; tz = targetActor.body.z; aimY = ty + 1.2 * targetActor.scale; }
+        else { tx = targetMob.x(); ty = targetMob.y(); tz = targetMob.z(); aimY = ty + 0.8; }
+        double ex = body.x, ey = body.y + 1.5 * scale, ez = body.z;
+        double dx = tx - ex, dz = tz - ez, d = Math.sqrt(dx * dx + dz * dz);
+        float lookYaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float seatYaw = vs.seatYaw(v, seat);
+        // the head turns to the target as far as it can from the seat; the gun points there
+        float rel = Math.max(-100, Math.min(100, wrap(lookYaw - seatYaw)));
+        headYaw = turn(headYaw, seatYaw + rel, 20);
+        float pitch = (float) -Math.toDegrees(Math.atan2(aimY - ey, d));
+        body.pitch += (pitch - body.pitch) * 0.35f;
+        if (d > Math.min(gun.range, 48)) return;
+        boolean see = m.canSee(ex, ey, ez, tx, aimY, tz);
+        gunSeen = see ? gunSeen + 1 : 0;
+        if (gunAmmo < 0) gunAmmo = gun.magazine;
+        if (gunReloadLeft > 0) return;
+        if (gunAmmo == 0) { gunReload(gun, true); return; }
+        boolean facing = Math.abs(wrap(headYaw - lookYaw)) < 15;           // a target behind the car: out of reach from this seat
+        if (!see || !facing) { gunBurst = 0; return; }
+        if (gunSeen < 12 + (id % 7)) return;
+        if (gunPause > 0) { gunPause--; return; }
+        if (gunBurst <= 0) { gunBurst = gun.auto ? 2 + r.nextInt(4) : 1; gunNext = age; }
+        if (gunNext < age - 1) gunNext = age;
+        if (gunNext <= age && gunAmmo > 0) {
+            double dy = aimY - ey, l = Math.sqrt(dx * dx + dy * dy + dz * dz) + 1e-9;
+            boolean moving = Math.abs(v.speed) > 0.02f;                       // from a moving car: much less accurate
+            float spread = gun.spreadHip * 0.5f + 1.5f + (moving ? gun.spreadMove * 1.5f + 2 : 0) + (float) Math.min(2, d / 30);
+            double[] dir = derpcraft.gun.Ballistics.spread(dx / l, dy / l, dz / l, spread, r);
+            gunShot(gun, dir[0], dir[1], dir[2], true);
+            gunAmmo--;
+            gunBurst--;
+            gunNext += Math.max(1, 1200.0 / gun.rpm);
+        }
+        if (gunBurst <= 0) gunPause = gun.auto ? 14 + r.nextInt(20) : 8 + r.nextInt(10);
     }
 
     /** True while it sits on its seat (SEAT behaviour). */
@@ -1142,6 +1200,7 @@ public final class Actor {
         derpcraft.gun.Ballistics.fire(s, gun, this, ex, ey, ez, dx, dy, dz, mz[0], mz[1], mz[2], hurt, false,
                 replay ? derpcraft.gun.Ballistics.DOORS_VISUAL : derpcraft.gun.Ballistics.DOORS_NONE);
         gunKick = 1;
+        if (!replay && s.npcs != null) s.npcs.aiAction(this, 3, gun.name, 0, dx, dy, dz);     // its own take (recorded with the scene)
     }
 
     /** A melee strike with the gun in hand (a take replays the player's): the third person animation and its swing sound. */
@@ -1163,6 +1222,8 @@ public final class Actor {
         gunMagDropped = false;
         gunBurst = 0;
         reloadSound("reload");
+        var ses = derpcraft.game.Session.current;
+        if (ses != null && ses.npcs != null && mode == Mode.AI) ses.npcs.aiAction(this, 4, gun.name, empty ? 1 : 0, 0, 0, 0);
     }
 
     private void reloadSound(String ev) {

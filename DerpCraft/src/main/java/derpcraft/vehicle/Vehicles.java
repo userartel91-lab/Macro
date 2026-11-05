@@ -1018,6 +1018,19 @@ public final class Vehicles {
         return true;
     }
 
+    /** The way a seat of a vehicle faces now (degrees). */
+    public float seatYaw(Vehicle v, int seat) { VehicleModel m = v.vm(); return m == null ? v.yaw : seatFacing(v, m, seat, v.yaw); }
+
+    /** What a vehicle an NPC sits in by its AI is doing, for recording its take (same layout as recordState), or null. */
+    public float[] seatState(Actor a) {
+        Vehicle v = byId(a.seatedVehicleId());
+        int seat = v == null ? -1 : v.seatOf(a.id);
+        if (seat < 0) return null;
+        int doors = 0;
+        for (int i = 0; i < v.openTarget.length && i < 30; i++) if (v.openTarget[i]) doors |= 1 << i;
+        return new float[]{v.id, seat, v.yaw, v.pitch, v.roll, v.steer, doors, v.flip, v.slip, (v.lightsOn ? 1 : 0) | (v.wrecked ? 2 : 0)};
+    }
+
     /** The vehicle an NPC sits in (driving, riding along, or put there by a take), or null. */
     public Vehicle seatedIn(Actor a) {
         Vehicle v = byId(a.seatedVehicleId());

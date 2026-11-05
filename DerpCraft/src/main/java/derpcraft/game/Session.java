@@ -1817,7 +1817,8 @@ public final class Session implements GameApi {
         if (a == null) return;
         var t = a.take(npcs.currentScene);
         var tr = a.track(npcs.currentScene);
-        chat(t != null ? String.format(java.util.Locale.ROOT, "§aTake saved: %s in scene \"%s\", %.1f s (take %d)", a.name, npcs.currentScene, t.seconds(), tr.takes.size()) : "§eNothing recorded");
+        chat(t != null ? String.format(java.util.Locale.ROOT, "§aTake saved: %s in scene \"%s\", %.1f s (take %d)%s", a.name, npcs.currentScene, t.seconds(), tr.takes.size(),
+                npcs.lastAiKept > 0 ? " §7+ " + npcs.lastAiKept + " NPC(s) of the scene with their AI" : "") : "§eNothing recorded");
     }
 
     /** Cancel key: throws the recording away; the actor keeps the takes it had, blocks changed while recording come back. */
@@ -2457,7 +2458,7 @@ public final class Session implements GameApi {
                 g.centered("Recording " + a.name + " starts in", g.width / 2f, g.height / 2f - 62, 0xFFFFFF);
             } else {
                 int t = npcs.recordTick();
-                String s = String.format(java.util.Locale.ROOT, "REC  %s  [%s]  %d:%02d.%d", a.name, npcs.currentScene, t / 1200, (t / 20) % 60, (t % 20) / 2);
+                String s = String.format(java.util.Locale.ROOT, "REC  %s%s  [%s]  %d:%02d.%d", a.name, npcs.aiRecorded() > 0 ? " +" + npcs.aiRecorded() + " NPC" : "", npcs.currentScene, t / 1200, (t / 20) % 60, (t % 20) / 2);
                 boolean blink = (ticks / 10) % 2 == 0;
                 int oy = game.recordingMarkHeight();    // below the screen recording mark
                 g.fill(4, 4 + oy, 8 + g.textWidth(s) + 4, 16 + oy, 0x90000000);

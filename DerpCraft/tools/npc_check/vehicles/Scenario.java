@@ -18,7 +18,7 @@ public class Scenario {
     static Session S() { return Session.current; }
     static NpcManager N() { return S().npcs; }
     static Vehicle car;
-    static Actor ann, drv;
+    static Actor ann, drv, bad, oth;
     static int fails;
     static double[] mark = new double[3];
 
@@ -188,19 +188,40 @@ public class Scenario {
             car.type().bullets.clear();
             ann.calm(); ann.health = ann.maxHealth;
         });
-        // ---- a driver killed in a scene: the car rolls out and stops
+        // ---- shooting out of the car: Ann (a gun in hand, in the car) at an NPC she is told to attack
         SmokeMain.wait(5, () -> {
-            ann.behavior = Actor.Behavior.STAND;               // out of the car, not following
-            S().vehicles.exitPlayer();
+            var gun = derpcraft.gun.Guns.get("fp9");
+            if (gun == null) for (var g : derpcraft.gun.Guns.all()) { gun = g; break; }
+            ann.held = new derpcraft.item.ItemStack(derpcraft.item.Items.byName(derpcraft.gun.Guns.PREFIX + gun.name), 1);
+            bad = N().spawn("Bad", car.x + 12, car.y, car.z + 2, 90);
+            bad.behavior = Actor.Behavior.STAND;
+            bad.maxHealth = bad.health = 200;
+            N().order(ann, bad);
+            S().player.setPos(car.x - 2.5, car.y, car.z - 3); S().player.yaw = -60; S().player.pitch = 10;
+        });
+        SmokeMain.wait(40, () -> SmokeMain.shot("v055_shoots_from_car"));
+        SmokeMain.wait(60, () -> {
+            check("follower shoots from the car", bad.health < 200 && car.seatOf(ann.id) >= 0, String.format(Locale.ROOT, "target hp %.0f, seat %d", bad.health, car.seatOf(ann.id)));
+            N().remove(bad);
+            ann.calm(); ann.held = null;
+        });
+        // ---- a take with the scene's AI NPCs: Ann (following, in the car) is recorded too; an NPC of another scene is not
+        SmokeMain.wait(5, () -> {
             drv = N().spawn("Drv", car.x - 3, car.y, car.z, 0);
+            String cur = N().currentScene, other = N().newGroup("Other");
+            N().currentScene = other;
+            oth = N().spawn("Oth", car.x - 4, car.y, car.z - 4, 0);
+            oth.behavior = Actor.Behavior.FOLLOW;
+            N().currentScene = cur;
             N().countdownSeconds = 0;
             N().walkToMarks = false;
         });
-        SmokeMain.wait(30, () -> {
-            check("follower left the car (now STAND)", car.seatOf(ann.id) < 0, "");
+        SmokeMain.wait(10, () -> {
             S().player.setPos(car.x - 2, car.y, car.z);
             playerIn();
+            check("follower still in the car", car.seatOf(ann.id) >= 0, "");
             N().startRecording(drv);
+            check("scene's AI NPCs recorded along", N().aiRecorded() == 1, N().aiRecorded() + " NPC");
             SmokeMain.hold(Keys.FORWARD, true);
         });
         SmokeMain.wait(70, () -> {
@@ -208,11 +229,15 @@ public class Scenario {
             S().stopRecordingKey();
             var t = drv.take(drv.group);
             check("driving take", t != null && t.frame(10).vehicle == car.id, t == null ? "none" : t.length() + " frames");
+            var at = ann.take(drv.group);
+            check("follower's own take in the scene", at != null && t != null && Math.abs(at.length() - t.length()) <= 1 && at.frame(30).vehicle == car.id,
+                    at == null ? "none" : at.length() + " frames, seat " + at.frame(30).seat);
+            check("other scene's NPC not recorded", !oth.hasTakes() && oth.take(drv.group) == null, "");
             S().vehicles.exitPlayer();
             S().player.setPos(S().player.x - 6, S().player.y, S().player.z);
         });
         SmokeMain.wait(20, () -> check("scene plays", N().playScene(drv.group), ""));
-        SmokeMain.step(() -> Math.abs(car.speed) > 0.25f, 200, () -> {
+        SmokeMain.step(() -> Math.abs(car.speed) > 0.2f, 200, () -> {
             System.out.printf(Locale.ROOT, "[smoke] before the kill: car speed %.3f%n", car.speed);
             drv.hurt(N(), 1000, null, true);
             check("driver dies in the take", drv.dead(), "");
@@ -220,6 +245,7 @@ public class Scenario {
             mark[0] = car.x; mark[2] = car.z;
         });
         SmokeMain.wait(4, () -> SmokeMain.shot("v06_driver_killed"));
+        SmokeMain.wait(30, () -> check("passenger's take does not drive the car", car.driverKilled && N().scenePlaying(drv.group), "ann seat (take) " + ann.mode()));
         SmokeMain.wait(80, () -> {
             double rolled = Math.hypot(car.x - mark[0], car.z - mark[2]);
             check("car rolled on and stopped", Math.abs(car.speed) < 0.01 && rolled > 0.5, String.format(Locale.ROOT, "rolled %.1f, speed %.3f", rolled, car.speed));
