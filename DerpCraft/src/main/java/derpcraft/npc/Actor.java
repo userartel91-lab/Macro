@@ -189,6 +189,16 @@ public final class Actor {
     public int rideAlong = -1;
     /** FOLLOW: told to wait (Tab while looking at it): it stays where it is until Tab again. */
     public boolean waiting;
+    /** FOLLOW: stood up again after dying: it stays at its spot until the player comes back to it (near it). */
+    public boolean waitForReturn;
+    /** Waits in either way (Tab or after a respawn). */
+    public boolean staysPut() { return waiting || waitForReturn; }
+    /** Getting into the player's car: no progress for so many ticks; a seat it gave up on for a while; where it was. */
+    public int boardStuck, boardSkipSeat = -1;
+    public long boardSkipUntil;
+    public double boardLastX, boardLastZ;
+
+    public long age() { return age; }
     /** Patrolling a small area because of Tab + 1; Tab gives back the behaviour and patrol points it had before. */
     public boolean tabPatrol;
     private Behavior savedBehavior;
@@ -721,7 +731,9 @@ public final class Actor {
                 }
                 case RIDE, DRIVE -> {}
                 case FOLLOW -> {
-                    if (waiting) {          // Tab: stays here until the player comes back and presses Tab again
+                    // after a respawn: waits until the player comes back to it
+                    if (waitForReturn && pd2 < Math.max(4, followStop + 1.5) * Math.max(4, followStop + 1.5)) waitForReturn = false;
+                    if (waiting || waitForReturn) {          // Tab: stays here until the player comes back and presses Tab again
                         double hx = homeX - body.x, hz = homeZ - body.z;
                         following = false;
                         if (hx * hx + hz * hz > 1.5 * 1.5) moveTo(w, in, homeX, homeY, homeZ, false);
@@ -962,6 +974,7 @@ public final class Actor {
         if (respawn && ++respawnTimer > Math.max(10, respawnSeconds * 20)) {
             revive();
             place(homeX, homeY, homeZ, homeYaw);
+            if (behavior == Behavior.FOLLOW) waitForReturn = true;      // a follower stays here: the player comes to fetch it
         }
         animate();
     }

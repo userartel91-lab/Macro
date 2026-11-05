@@ -159,7 +159,7 @@ public final class Vehicles {
                     boolean wr = v.wrecked;
                     v.holes.clear();
                     v.repair();
-                    v.fireTicks = 0; v.blastIn = 0;
+                    v.fireTicks = 0; v.blastIn = 0; v.carOnFire = false;
                     vs.save();
                     s.chat("Vehicle #" + v.id + " is like new" + (n > 0 ? " (" + n + " bullet holes gone)" : "") + (wr ? " (repaired)" : ""));
                 }
@@ -557,10 +557,12 @@ public final class Vehicles {
                 }
             }
         }
-        if (fire) {
+        // 3 seconds in the fire and the car itself is on fire: it burns on (also when the fire under it goes out) and blows up
+        if (fire || v.carOnFire) {
             if (v.fireTicks == 0) v.fireFuse = 400 + random.nextInt(201);
             v.fireTicks += 10;
-            if (v.fireTicks >= v.fireFuse) { v.fireTicks = 0; explode(v, false); }
+            if (v.fireTicks >= 60) v.carOnFire = true;
+            if (v.fireTicks >= v.fireFuse) { v.fireTicks = 0; v.carOnFire = false; explode(v, false); }
         } else v.fireTicks = Math.max(0, v.fireTicks - 20);
     }
 
@@ -570,6 +572,10 @@ public final class Vehicles {
         double[] w = new double[3];
         v.bodyPointAt(m, (random.nextFloat() - 0.5f) * (m.maxX - m.minX) * 0.6f, m.maxY * 0.5f, m.minZ + (m.maxZ - m.minZ) * 0.2f, 1, w);
         er.wreckSmoke(w[0], w[1], w[2], 0.25f + 0.4f * v.fireTicks / (float) Math.max(1, v.fireFuse));
+        if (v.carOnFire && random.nextFloat() < 0.5f) {               // flames under the hood once it caught fire
+            v.bodyPointAt(m, (random.nextFloat() - 0.5f) * (m.maxX - m.minX) * 0.5f, m.maxY * 0.45f, m.minZ + (m.maxZ - m.minZ) * (0.1f + random.nextFloat() * 0.2f), 1, w);
+            er.wreckFlame(w[0], w[1], w[2]);
+        }
     }
 
     /**
@@ -913,6 +919,7 @@ public final class Vehicles {
         for (int i = 0; i < m.seats.size(); i++) {
             if (i < v.riders.length && v.riders[i] != Vehicle.NONE && !(v.riders[i] == Vehicle.PLAYER && playerVehicle == v)) continue;
             if (doorOpen && !v.doorOpenFor(m, i)) continue;
+            if (i != m.driverSeat && seatTaken(v, m, i)) continue;        // on top of the driver's or a taken seat
             float[] st = m.seats.get(i);
             double d = local == null ? (i == m.driverSeat ? 0 : 1 + i) : (st[0] - local[0]) * (st[0] - local[0]) + (st[2] - local[2]) * (st[2] - local[2]);
             if (d < bd) { bd = d; best = i; }
@@ -1064,7 +1071,7 @@ public final class Vehicles {
             VehicleModel cm = cur.vm();
             if (seat < 0 || cm == null) { a.rideAlong = -1; return false; }
             if (cur.wrecked) { eject(cur, seat); return false; }
-            if (playerVehicle == cur || a.waiting) return true;               // rides along / waits in the car
+            if (playerVehicle == cur || a.staysPut()) return true;            // rides along / waits in the car
             Player p = s.player;
             double dx = p.x - a.x(), dz = p.z - a.z();
             if (dx * dx + dz * dz <= a.followStart * a.followStart || Math.abs(cur.speed) > 0.05f) return true;
@@ -1080,21 +1087,33 @@ public final class Vehicles {
         }
         Vehicle v = playerVehicle;
         VehicleModel m = v == null ? null : v.vm();
-        if (m == null || v.wrecked || a.waiting || Math.abs(v.speed) > 0.08f) return false;
+        if (m == null || v.wrecked || a.staysPut() || Math.abs(v.speed) > 0.08f) { a.boardStuck = 0; return false; }
         double d2 = v.distSq(a.x(), a.z());
         if (d2 > 40 * 40) return false;
-        // the free passenger seat nearest to the NPC
+        // the free passenger seat nearest to the NPC (not one that is really where the driver or someone else sits:
+        // seats made up from the steering wheel can lie on top of each other)
         int want = -1;
         double bd = Double.MAX_VALUE;
         double[] door3 = null;
         for (int i = 0; i < m.seats.size() && i < v.riders.length; i++) {
-            if (i == m.driverSeat || v.riders[i] != Vehicle.NONE) continue;
+            if (i == m.driverSeat || v.riders[i] != Vehicle.NONE || i == a.boardSkipSeat && a.age() < a.boardSkipUntil) continue;
+            if (seatTaken(v, m, i)) continue;
             double[] o = exitPoint(v, i, 0.6f, 1.8f);
             double dd = (o[0] - a.x()) * (o[0] - a.x()) + (o[2] - a.z()) * (o[2] - a.z());
             if (dd < bd) { bd = dd; want = i; door3 = o; }
         }
-        if (want < 0) return false;                            // no room: it just follows
-        if (bd > 0.8 * 0.8) return a.walkTo(door3[0], door3[1], door3[2], bd > 8 * 8);
+        if (want < 0) { a.boardStuck = 0; return false; }      // no room: it just follows
+        if (bd > 0.8 * 0.8) {
+            // round the car to the door, not through it: a corner of the car on the door's side first
+            double[] go = aroundTo(v, m, a, door3);
+            double moved = Math.hypot(a.x() - a.boardLastX, a.z() - a.boardLastZ);
+            if (moved > 0.3) { a.boardLastX = a.x(); a.boardLastZ = a.z(); a.boardStuck = 0; }
+            else if (++a.boardStuck > 50) {                       // pressed against something: another seat (the other side) for a while
+                a.boardSkipSeat = want; a.boardSkipUntil = a.age() + 200; a.boardStuck = 0;
+            }
+            return a.walkTo(go[0], go[1], go[2], bd > 8 * 8);
+        }
+        a.boardStuck = 0;
         int d = want < m.seatDoor.length ? m.seatDoor[want] : -1;
         if (d >= 0 && d < v.open.length && v.open[d] < 0.9f) {
             if (!v.openTarget[d]) { v.openTarget[d] = true; v.autoClose[d] = true; }
@@ -1106,6 +1125,40 @@ public final class Vehicles {
         placeRiders(v, m);
         if (d >= 0 && d < v.autoClose.length && v.autoClose[d]) { v.closeTimer[d] = 14; v.autoClose[d] = false; }
         return true;
+    }
+
+    /** Whether a seat is (nearly) where the driver's seat or a taken seat is: half a block or closer. */
+    private static boolean seatTaken(Vehicle v, VehicleModel m, int i) {
+        float[] s = m.seats.get(i);
+        for (int j = 0; j < m.seats.size(); j++) {
+            if (j == i) continue;
+            boolean busy = j == m.driverSeat || j < v.riders.length && v.riders[j] != Vehicle.NONE;
+            if (!busy) continue;
+            float[] o = m.seats.get(j);
+            if ((s[0] - o[0]) * (s[0] - o[0]) + (s[2] - o[2]) * (s[2] - o[2]) < 0.55f * 0.55f) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Where to walk now to get to a door point without going into the car: straight there when the NPC is on the
+     * door's side already, otherwise to the corner of the car (a block out) on that side, at the end nearer to it.
+     */
+    private double[] aroundTo(Vehicle v, VehicleModel m, Actor a, double[] door) {
+        double[] la = local(v, m, a.x(), a.z(), 1e9), ld = local(v, m, door[0], door[2], 1e9);
+        if (la == null || ld == null) return door;
+        double side = ld[0] >= (m.minX + m.maxX) / 2 ? 1 : -1;
+        double edge = side > 0 ? m.maxX : m.minX;
+        boolean onSide = side > 0 ? la[0] > edge + 0.25 : la[0] < edge - 0.25;
+        if (onSide) return door;
+        double cx = edge + side * 1.0;
+        double cz = la[1] < (m.minZ + m.maxZ) / 2 ? m.minZ - 1.0 : m.maxZ + 1.0;
+        // at the corner already (or in front of / behind the car past it): along the side to the door
+        boolean pastEnd = la[1] < m.minZ - 0.4 || la[1] > m.maxZ + 0.4;
+        if (pastEnd && Math.abs(la[0] - cx) < 0.8) return door;
+        double a0 = Math.PI - Math.toRadians(v.yaw), c = Math.cos(a0), sn = Math.sin(a0);
+        double wx = v.x + cx * c + cz * sn, wz = v.z - cx * sn + cz * c;
+        return new double[]{wx, door[1], wz};
     }
 
     /** The way a seat of a vehicle faces now (degrees). */

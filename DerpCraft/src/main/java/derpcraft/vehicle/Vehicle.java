@@ -95,6 +95,8 @@ public final class Vehicle {
     public static final int MAX_HOLES = 400;
     /** Ticks until a blast next to it sets it off (0 = none); ticks it has stood in fire and when that blows it up. */
     public int blastIn, fireTicks, fireFuse;
+    /** It stood in fire for 3 s: the car burns by itself now and blows up at fireFuse. */
+    public boolean carOnFire;
 
     /** A bullet hole on a part (model coordinates of the part, the face's normal). The oldest go when there are too many. */
     public void addHole(int part, float x, float y, float z, float nx, float ny, float nz) {

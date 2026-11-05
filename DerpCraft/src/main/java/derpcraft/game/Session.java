@@ -1763,6 +1763,9 @@ public final class Session implements GameApi {
         if (a.tabPatrol) {
             a.endTabPatrol();
             chat("§e" + a.name + ": " + (a.behavior == derpcraft.npc.Actor.Behavior.FOLLOW ? "follows you again" : a.behavior.label.toLowerCase(java.util.Locale.ROOT)));
+        } else if (a.behavior == derpcraft.npc.Actor.Behavior.FOLLOW && a.waitForReturn) {
+            a.waitForReturn = false; a.waiting = false;              // came back for it after it respawned: Tab = come along
+            chat("§e" + a.name + " follows you again");
         } else if (a.behavior == derpcraft.npc.Actor.Behavior.FOLLOW) {
             a.waiting = !a.waiting;
             if (a.waiting) a.setHome();
